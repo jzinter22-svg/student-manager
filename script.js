@@ -15,3 +15,16 @@ addButton.addEventListener('click', function() {
     // Display the name in the message element
     messageElement.textContent = studentName;
 });
+
+// Example only — do not execute yet
+/*
+fetch('/api/students', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+        name: 'أحمد'
+    })
+});
+*/
