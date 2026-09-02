@@ -12,19 +12,19 @@ addButton.addEventListener('click', function() {
     // Read the student's name from the input
     const studentName = studentNameInput.value;
 
-    // Display the name in the message element
-    messageElement.textContent = studentName;
-});
-
-// Example only — do not execute yet
-/*
-fetch('/api/students', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-        name: 'أحمد'
+    // Send POST request to the backend
+    fetch('/api/students', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            name: studentName
+        })
     })
+    .then(response => response.json())
+    .then(data => {
+        // Display the response message
+        messageElement.textContent = data.message;
+    });
 });
-*/
