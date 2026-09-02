@@ -1,4 +1,19 @@
+process.loadEnvFile();
+
 const http = require('http');
+const { Pool } = require('pg');
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL
+});
+
+pool.query('SELECT 1', (error) => {
+    if (error) {
+        console.log('Database connection failed');
+    } else {
+        console.log('Database connection succeeded');
+    }
+});
 
 const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/api/students') {
