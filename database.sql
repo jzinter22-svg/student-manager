@@ -16,11 +16,31 @@ CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    email TEXT NOT NULL,
+    -- Globally unique (not just per-school): login is performed by email
+    -- alone with no school context supplied by the client, so the same
+    -- email must not be able to resolve to accounts in two different
+    -- schools -- that would make login ambiguous and is a tenant-isolation
+    -- risk in itself.
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'teacher', 'staff')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (school_id, email)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Server-side sessions for authentication. The session identifier itself
+-- is a random token handed to the client only inside an HttpOnly cookie;
+-- only its SHA-256 hash is stored here, so a database leak alone does not
+-- yield usable session tokens. Expired sessions are never treated as
+-- valid (enforced by the application's expires_at > now() check).
+CREATE TABLE sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_sessions_user_id ON sessions (user_id);
 
 CREATE TABLE students (
     id SERIAL PRIMARY KEY,

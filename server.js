@@ -1,18 +1,36 @@
 const http = require('http');
+const crypto = require('crypto');
 const { Pool } = require('pg');
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL
 });
 
-// TEMPORARY DEVELOPMENT SCHOOL CONTEXT
-// This is NOT the final authentication architecture. There is no login
-// system yet, so every request is treated as belonging to this fixed
-// school until the authentication layer exists. Once authentication is
-// added, the school context must be derived from the authenticated user
-// instead of a hard-coded value, and the client must never be able to
-// choose which school's data it accesses.
-const DEV_SCHOOL_ID = 1;
+// ---------------------------------------------------------------------------
+// Session secret
+// ---------------------------------------------------------------------------
+// Used to HMAC-sign the random session token stored in the client's cookie,
+// so a tampered/forged cookie value is rejected before ever touching the
+// database, and rotating this secret invalidates every existing session.
+// It is never logged and never sent to the client.
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.SESSION_SECRET) {
+    console.warn(
+        'SESSION_SECRET is not set. Using a randomly generated secret for this ' +
+        'process only, so all sessions will be invalidated on restart. Set ' +
+        'SESSION_SECRET in .env for a stable/production deployment.'
+    );
+}
+
+const SESSION_COOKIE_NAME = 'session_token';
+const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SCRYPT_KEYLEN = 64;
+const MIN_PASSWORD_LENGTH = 8;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ---------------------------------------------------------------------------
+// Small HTTP helpers
+// ---------------------------------------------------------------------------
 
 function sendJson(res, statusCode, payload) {
     res.writeHead(statusCode, { 'Content-Type': 'application/json' });
@@ -30,11 +48,335 @@ function readRequestBody(req) {
     });
 }
 
+async function parseJsonBody(req) {
+    const body = await readRequestBody(req);
+    if (!body) return {};
+    return JSON.parse(body);
+}
+
+function parseCookies(req) {
+    const header = req.headers.cookie;
+    const cookies = {};
+    if (!header) return cookies;
+    header.split(';').forEach(pair => {
+        const idx = pair.indexOf('=');
+        if (idx === -1) return;
+        const key = pair.slice(0, idx).trim();
+        const value = pair.slice(idx + 1).trim();
+        if (key) cookies[key] = decodeURIComponent(value);
+    });
+    return cookies;
+}
+
+function buildCookieHeader(value, maxAgeSeconds) {
+    const attrs = [
+        `${SESSION_COOKIE_NAME}=${value}`,
+        'Path=/',
+        'HttpOnly',
+        'SameSite=Lax',
+        `Max-Age=${maxAgeSeconds}`
+    ];
+    // Secure requires HTTPS; enable it once the app is actually served over
+    // HTTPS in production so local HTTP development keeps working.
+    if (process.env.NODE_ENV === 'production') {
+        attrs.push('Secure');
+    }
+    return attrs.join('; ');
+}
+
+// ---------------------------------------------------------------------------
+// Password hashing (Node's built-in crypto.scrypt -- no extra dependency)
+// ---------------------------------------------------------------------------
+
+function hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const derivedKey = crypto.scryptSync(password, salt, SCRYPT_KEYLEN);
+    return `scrypt:${salt}:${derivedKey.toString('hex')}`;
+}
+
+function verifyPassword(password, storedHash) {
+    const parts = storedHash.split(':');
+    if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+    const [, salt, hashHex] = parts;
+    const derivedKey = crypto.scryptSync(password, salt, SCRYPT_KEYLEN);
+    const storedBuffer = Buffer.from(hashHex, 'hex');
+    if (storedBuffer.length !== derivedKey.length) return false;
+    return crypto.timingSafeEqual(derivedKey, storedBuffer);
+}
+
+// A precomputed hash with no real user behind it, used to keep login's
+// response time similar whether or not the email exists -- otherwise a
+// missing user would skip scrypt entirely and be measurably faster,
+// letting an attacker enumerate valid emails via timing.
+const DUMMY_PASSWORD_HASH = hashPassword('not-a-real-account-password');
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+function sha256Hex(value) {
+    return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function signToken(token) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(token).digest('hex');
+}
+
+// Cookie value is "<random token>.<HMAC signature of token>". The database
+// only ever stores sha256(token), so neither the cookie contents nor the
+// database contents alone are enough to authenticate as another user.
+function buildSessionCookieValue(token) {
+    return `${token}.${signToken(token)}`;
+}
+
+function verifyAndExtractToken(cookieValue) {
+    const dotIndex = cookieValue.indexOf('.');
+    if (dotIndex === -1) return null;
+    const token = cookieValue.slice(0, dotIndex);
+    const signature = cookieValue.slice(dotIndex + 1);
+    const expectedSignature = signToken(token);
+    const signatureBuffer = Buffer.from(signature, 'hex');
+    const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+    if (signatureBuffer.length !== expectedBuffer.length) return null;
+    if (!crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return null;
+    return token;
+}
+
+async function createSession(userId) {
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = sha256Hex(token);
+    const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+    await pool.query(
+        'INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+        [userId, tokenHash, expiresAt]
+    );
+    return {
+        cookieValue: buildSessionCookieValue(token),
+        maxAgeSeconds: Math.floor(SESSION_DURATION_MS / 1000)
+    };
+}
+
+async function destroySession(tokenHash) {
+    await pool.query('DELETE FROM sessions WHERE token_hash = $1', [tokenHash]);
+}
+
+// Reads the session cookie (if any), validates its signature, and looks up
+// the still-valid, non-expired session in the database together with the
+// user it belongs to. This is the ONLY source of req.user.school_id -- the
+// request body, query string, and headers are never trusted for it.
+async function authenticateRequest(req) {
+    const cookies = parseCookies(req);
+    const cookieValue = cookies[SESSION_COOKIE_NAME];
+    if (!cookieValue) return null;
+
+    const token = verifyAndExtractToken(cookieValue);
+    if (!token) return null;
+
+    const tokenHash = sha256Hex(token);
+    const result = await pool.query(
+        `SELECT users.id, users.school_id, users.name, users.email, users.role
+         FROM sessions
+         JOIN users ON users.id = sessions.user_id
+         WHERE sessions.token_hash = $1 AND sessions.expires_at > now()`,
+        [tokenHash]
+    );
+
+    if (result.rows.length === 0) return null;
+
+    const row = result.rows[0];
+    return {
+        id: row.id,
+        school_id: row.school_id,
+        name: row.name,
+        email: row.email,
+        role: row.role,
+        tokenHash
+    };
+}
+
+// Wraps a handler so it only runs for an authenticated request, with
+// req.user populated from the database-backed session lookup above.
+function requireAuth(handler) {
+    return async (req, res) => {
+        const user = await authenticateRequest(req);
+        if (!user) {
+            sendJson(res, 401, { success: false, error: 'Authentication required' });
+            return;
+        }
+        req.user = user;
+        await handler(req, res);
+    };
+}
+
+// Authorization foundation for later phases: wraps a handler so it only
+// runs for an authenticated user whose role is in the allowed list.
+function requireRole(...allowedRoles) {
+    return function (handler) {
+        return requireAuth(async (req, res) => {
+            if (!allowedRoles.includes(req.user.role)) {
+                sendJson(res, 403, { success: false, error: 'Insufficient permissions' });
+                return;
+            }
+            await handler(req, res);
+        });
+    };
+}
+
+function safeUser(row) {
+    return {
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        role: row.role,
+        school_id: row.school_id
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Auth handlers
+// ---------------------------------------------------------------------------
+
+async function handleRegister(req, res) {
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const school = data.school && typeof data.school === 'object' ? data.school : {};
+    const user = data.user && typeof data.user === 'object' ? data.user : {};
+
+    const schoolName = typeof school.name === 'string' ? school.name.trim() : '';
+    const schoolCode = typeof school.code === 'string' ? school.code.trim() : '';
+    const userName = typeof user.name === 'string' ? user.name.trim() : '';
+    const email = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
+    const password = typeof user.password === 'string' ? user.password : '';
+
+    if (!schoolName || !schoolCode || !userName || !email || !password) {
+        sendJson(res, 400, {
+            success: false,
+            error: 'school.name, school.code, user.name, user.email, and user.password are all required'
+        });
+        return;
+    }
+    if (!EMAIL_REGEX.test(email)) {
+        sendJson(res, 400, { success: false, error: 'Invalid email address' });
+        return;
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+        sendJson(res, 400, { success: false, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+        return;
+    }
+
+    // Hashed before the transaction starts; scrypt is deliberately slow, and
+    // there's no reason to hold a database transaction open while it runs.
+    const passwordHash = hashPassword(password);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const schoolResult = await client.query(
+            'INSERT INTO schools (name, code) VALUES ($1, $2) RETURNING id',
+            [schoolName, schoolCode]
+        );
+        const schoolId = schoolResult.rows[0].id;
+
+        // The new user always becomes the owner of the school they just
+        // registered -- role is never taken from client input.
+        const userResult = await client.query(
+            `INSERT INTO users (school_id, name, email, role, password_hash)
+             VALUES ($1, $2, $3, 'owner', $4)
+             RETURNING id, school_id, name, email, role`,
+            [schoolId, userName, email, passwordHash]
+        );
+
+        await client.query('COMMIT');
+        sendJson(res, 201, { success: true, user: safeUser(userResult.rows[0]) });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        if (error.code === '23505') {
+            const message = error.constraint === 'schools_code_key'
+                ? 'School code is already in use'
+                : 'Email is already in use';
+            sendJson(res, 400, { success: false, error: message });
+        } else {
+            console.error('Database error during registration:', error.message);
+            sendJson(res, 500, { success: false, error: 'Registration failed' });
+        }
+    } finally {
+        client.release();
+    }
+}
+
+async function handleLogin(req, res) {
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const email = typeof data.email === 'string' ? data.email.trim().toLowerCase() : '';
+    const password = typeof data.password === 'string' ? data.password : '';
+
+    if (!email || !password) {
+        sendJson(res, 400, { success: false, error: 'Email and password are required' });
+        return;
+    }
+
+    try {
+        const result = await pool.query(
+            'SELECT id, school_id, name, email, role, password_hash FROM users WHERE email = $1',
+            [email]
+        );
+        const userRow = result.rows[0] || null;
+
+        // Always run password verification, even for an unknown email, using
+        // a dummy hash so the response time doesn't leak whether the
+        // account exists.
+        const passwordOk = verifyPassword(password, userRow ? userRow.password_hash : DUMMY_PASSWORD_HASH);
+
+        if (!userRow || !passwordOk) {
+            sendJson(res, 401, { success: false, error: 'Invalid email or password' });
+            return;
+        }
+
+        const { cookieValue, maxAgeSeconds } = await createSession(userRow.id);
+        res.setHeader('Set-Cookie', buildCookieHeader(cookieValue, maxAgeSeconds));
+        sendJson(res, 200, { success: true, user: safeUser(userRow) });
+    } catch (error) {
+        console.error('Database error during login:', error.message);
+        sendJson(res, 500, { success: false, error: 'Login failed' });
+    }
+}
+
+async function handleMe(req, res) {
+    sendJson(res, 200, { success: true, user: safeUser(req.user) });
+}
+
+async function handleLogout(req, res) {
+    try {
+        await destroySession(req.user.tokenHash);
+    } catch (error) {
+        console.error('Database error during logout:', error.message);
+    }
+    res.setHeader('Set-Cookie', buildCookieHeader('', 0));
+    sendJson(res, 200, { success: true, message: 'Logged out' });
+}
+
+// ---------------------------------------------------------------------------
+// Student handlers (tenant-scoped via req.user.school_id -- never from the
+// client-supplied request body, query string, or headers)
+// ---------------------------------------------------------------------------
+
 async function handleCreateStudent(req, res) {
     let data;
     try {
-        const body = await readRequestBody(req);
-        data = JSON.parse(body);
+        data = await parseJsonBody(req);
     } catch (error) {
         sendJson(res, 400, { success: false, message: 'Invalid JSON' });
         return;
@@ -57,7 +399,7 @@ async function handleCreateStudent(req, res) {
             `INSERT INTO students (school_id, name, student_code, date_of_birth, gender, phone, address)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING id, school_id, name, student_code, date_of_birth, gender, phone, address, created_at`,
-            [DEV_SCHOOL_ID, name, studentCode, dateOfBirth, gender, phone, address]
+            [req.user.school_id, name, studentCode, dateOfBirth, gender, phone, address]
         );
         sendJson(res, 201, {
             success: true,
@@ -77,7 +419,7 @@ async function handleListStudents(req, res) {
              FROM students
              WHERE school_id = $1
              ORDER BY id`,
-            [DEV_SCHOOL_ID]
+            [req.user.school_id]
         );
         sendJson(res, 200, { success: true, students: result.rows });
     } catch (error) {
@@ -86,20 +428,31 @@ async function handleListStudents(req, res) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+const routes = {
+    'POST /api/auth/register': handleRegister,
+    'POST /api/auth/login': handleLogin,
+    'GET /api/auth/me': requireAuth(handleMe),
+    'POST /api/auth/logout': requireAuth(handleLogout),
+    'GET /api/students': requireAuth(handleListStudents),
+    'POST /api/students': requireAuth(handleCreateStudent)
+};
+
 const server = http.createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/api/students') {
-        handleCreateStudent(req, res).catch(error => {
-            console.error('Unexpected server error:', error.message);
-            sendJson(res, 500, { success: false, message: 'Internal server error' });
-        });
-    } else if (req.method === 'GET' && req.url === '/api/students') {
-        handleListStudents(req, res).catch(error => {
-            console.error('Unexpected server error:', error.message);
-            sendJson(res, 500, { success: false, message: 'Internal server error' });
-        });
-    } else {
-        sendJson(res, 404, { success: false, message: 'Not found' });
+    const handler = routes[`${req.method} ${req.url}`];
+
+    if (!handler) {
+        sendJson(res, 404, { success: false, error: 'Not found' });
+        return;
     }
+
+    handler(req, res).catch(error => {
+        console.error('Unexpected server error:', error.message);
+        sendJson(res, 500, { success: false, error: 'Internal server error' });
+    });
 });
 
 server.listen(3000, () => {
