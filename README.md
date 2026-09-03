@@ -259,3 +259,84 @@ register → dashboard → students → add student → dashboard count updates
 placeholder nav item, the client-side search filter, the mobile drawer
 (open/close/backdrop/auto-close-on-navigate), and no horizontal overflow
 at 375/768/1024px — 39 assertions, all passing.
+
+## Phase 5 — Teachers Management
+
+`المعلمون` is no longer a placeholder — it's a real CRUD module, using the
+existing `teachers` table (`id`, `school_id`, `user_id`, `name`, `phone`,
+`specialization`, `created_at`) unchanged and the existing
+`requireAuth`/`requireRole` mechanisms unchanged. No schema changes, no
+new dependencies.
+
+**API** (all tenant-scoped by `req.user.school_id`, never by anything the
+client sends):
+
+- `GET /api/teachers` — any authenticated role; returns the school's
+  teachers, newest first.
+- `POST /api/teachers` — **owner/admin only** (`403` otherwise); requires
+  non-empty `name`, `phone`, and `specialization`. `user_id` is left
+  `NULL` — creating a teacher never creates a login account for them.
+- `PATCH /api/teachers/:id` — **owner/admin only**; same three fields
+  required. The query is `WHERE id = $1 AND school_id = $2`, so a teacher
+  belonging to another school simply matches zero rows — same `404` as a
+  teacher that doesn't exist at all, never a `200` and never a `403` that
+  would confirm another tenant's record exists.
+- `DELETE /api/teachers/:id` — **owner/admin only**; same tenant-scoped
+  `WHERE id = $1 AND school_id = $2` rule.
+
+`teacher`/`staff` roles can `GET` (read) but get `403 Forbidden` from
+`POST`/`PATCH`/`DELETE` — this mirrors the task's "teacher management is
+an administrative operation" rule while keeping listing available to
+everyone at the school, consistent with how `GET /api/students` already
+works for every role.
+
+`/api/teachers/:id` is the one route needing a URL parameter; it's
+matched with one small dedicated regex in `server.js` rather than
+building a general path-router for a single case.
+
+**Frontend** — same `index.html`/`script.js`/`style.css`, same dashboard
+shell, no new files: an "إضافة معلم"-toggled form (also reused for
+editing, with its title/button text and prefilled values swapped), a
+list showing name/phone/specialization with تعديل/حذف actions, a native
+`confirm()` before delete, and a client-side search filtering the
+already-loaded list by name/phone/specialization (no new search
+endpoint). The add/edit/delete action controls are hidden in the UI for
+`teacher`/`staff` roles — purely a UX nicety, since the API enforces the
+real restriction regardless of what the UI shows.
+
+**Bug fixed in the process:** `.app-shell` and `.view` (both introduced
+in Phase 4) set `display: flex` as an author rule, which — per the CSS
+cascade — always outranks the browser's built-in `[hidden] {
+display: none }` regardless of selector specificity, since author-origin
+declarations beat user-agent-origin ones outright. In practice this meant
+every `hidden`-toggled screen/view carrying one of those classes (the
+authenticated app shell itself, and every dashboard/students/teachers/
+placeholder view) stayed visually rendered and stacked underneath
+whichever view *was* meant to be showing, even though the `hidden`
+attribute was being toggled correctly in the DOM the whole time. It went
+undetected through Phases 3–4 because those tests asserted the expected
+screen/view *was* visible via `:not([hidden])`-based waits, never that
+the others actually weren't. Fixed with two explicit `.app-shell[hidden]`
+/ `.view[hidden] { display: none; }` overrides (higher specificity than
+the base class, so they win outright) — verified directly before and
+after the fix, and covered going forward by this phase's Playwright
+suite, which does assert on real visibility.
+
+Tested with real Chromium via Playwright (38 assertions) plus curl for
+the parts a browser can't easily drive (role accounts other than
+`owner`, which only registration can create — `admin`/`teacher`/`staff`
+test accounts were inserted directly with the same `scrypt` hash format
+the app itself uses): unauthenticated `401` on both `GET`/`POST`;
+owner and admin can create/read/update/delete; `teacher` and `staff` get
+`403` on create/update/delete but `200` on read; missing/whitespace-only
+name, phone, or specialization all rejected with `400` (checked on both
+ends); a SQL-injection-shaped name is stored as inert literal text, not
+executed; full create → edit → delete lifecycle through the real UI,
+including the confirm-dialog-cancel-doesn't-delete path; newest-first
+ordering; client-side search by name/phone/specialization; no horizontal
+overflow at 375/768/1024px; a two-school regression (School A/Teacher A,
+School B/Teacher B) confirming School A can neither read, update
+(`404`), nor delete (`404`) School B's teacher, from both curl and the
+real dashboard UI; and a full Phase 1–4 regression (register, login,
+student creation, dashboard count, session refresh, logout) alongside
+the new module.

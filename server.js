@@ -466,6 +466,126 @@ async function handleListStudents(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Teacher handlers (tenant-scoped via req.user.school_id, same rule as
+// students: the client never supplies school_id in the body, query string,
+// or URL. Create/update/delete are an administrative operation restricted
+// to the owner/admin roles via requireRole; listing only requires being
+// authenticated, matching the existing student GET endpoint's rule.)
+// ---------------------------------------------------------------------------
+
+function readTeacherFields(data) {
+    return {
+        name: typeof data.name === 'string' ? data.name.trim() : '',
+        phone: typeof data.phone === 'string' ? data.phone.trim() : '',
+        specialization: typeof data.specialization === 'string' ? data.specialization.trim() : ''
+    };
+}
+
+async function handleListTeachers(req, res) {
+    try {
+        const result = await pool.query(
+            `SELECT id, school_id, user_id, name, phone, specialization, created_at
+             FROM teachers
+             WHERE school_id = $1
+             ORDER BY id DESC`,
+            [req.user.school_id]
+        );
+        sendJson(res, 200, { success: true, teachers: result.rows });
+    } catch (error) {
+        console.error('Database error while listing teachers:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to fetch teachers' });
+    }
+}
+
+async function handleCreateTeacher(req, res) {
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const { name, phone, specialization } = readTeacherFields(data);
+    if (!name || !phone || !specialization) {
+        sendJson(res, 400, { success: false, error: 'Name, phone, and specialization are all required' });
+        return;
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO teachers (school_id, name, phone, specialization)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, school_id, user_id, name, phone, specialization, created_at`,
+            [req.user.school_id, name, phone, specialization]
+        );
+        sendJson(res, 201, { success: true, teacher: result.rows[0] });
+    } catch (error) {
+        console.error('Database error while creating teacher:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to create teacher' });
+    }
+}
+
+async function handleUpdateTeacher(req, res) {
+    const id = req.params.id;
+
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const { name, phone, specialization } = readTeacherFields(data);
+    if (!name || !phone || !specialization) {
+        sendJson(res, 400, { success: false, error: 'Name, phone, and specialization are all required' });
+        return;
+    }
+
+    try {
+        // school_id in the WHERE clause (not just id) is what makes a
+        // cross-tenant update impossible: a teacher belonging to another
+        // school simply matches zero rows here, same as if it didn't exist.
+        const result = await pool.query(
+            `UPDATE teachers
+             SET name = $1, phone = $2, specialization = $3
+             WHERE id = $4 AND school_id = $5
+             RETURNING id, school_id, user_id, name, phone, specialization, created_at`,
+            [name, phone, specialization, id, req.user.school_id]
+        );
+        if (result.rows.length === 0) {
+            sendJson(res, 404, { success: false, error: 'Teacher not found' });
+            return;
+        }
+        sendJson(res, 200, { success: true, teacher: result.rows[0] });
+    } catch (error) {
+        console.error('Database error while updating teacher:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to update teacher' });
+    }
+}
+
+async function handleDeleteTeacher(req, res) {
+    const id = req.params.id;
+
+    try {
+        // Same tenant-scoping rule as update: id alone is never enough.
+        const result = await pool.query(
+            'DELETE FROM teachers WHERE id = $1 AND school_id = $2 RETURNING id',
+            [id, req.user.school_id]
+        );
+        if (result.rows.length === 0) {
+            sendJson(res, 404, { success: false, error: 'Teacher not found' });
+            return;
+        }
+        sendJson(res, 200, { success: true, message: 'Teacher deleted successfully' });
+    } catch (error) {
+        console.error('Database error while deleting teacher:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to delete teacher' });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -475,8 +595,17 @@ const routes = {
     'GET /api/auth/me': requireAuth(handleMe),
     'POST /api/auth/logout': requireAuth(handleLogout),
     'GET /api/students': requireAuth(handleListStudents),
-    'POST /api/students': requireAuth(handleCreateStudent)
+    'POST /api/students': requireAuth(handleCreateStudent),
+    'GET /api/teachers': requireAuth(handleListTeachers),
+    'POST /api/teachers': requireRole('owner', 'admin')(handleCreateTeacher)
 };
+
+// /api/teachers/:id (PATCH, DELETE) is the only route needing a URL
+// parameter, so it gets one small dedicated regex match rather than a
+// general path-matching system built for a single case.
+const TEACHER_ID_ROUTE = /^\/api\/teachers\/(\d+)$/;
+const updateTeacherHandler = requireRole('owner', 'admin')(handleUpdateTeacher);
+const deleteTeacherHandler = requireRole('owner', 'admin')(handleDeleteTeacher);
 
 const server = http.createServer((req, res) => {
     if (req.method === 'GET' && STATIC_FILES[req.url]) {
@@ -484,7 +613,15 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    const handler = routes[`${req.method} ${req.url}`];
+    let handler = routes[`${req.method} ${req.url}`];
+
+    if (!handler) {
+        const teacherIdMatch = TEACHER_ID_ROUTE.exec(req.url);
+        if (teacherIdMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+            req.params = { id: teacherIdMatch[1] };
+            handler = req.method === 'PATCH' ? updateTeacherHandler : deleteTeacherHandler;
+        }
+    }
 
     if (!handler) {
         sendJson(res, 404, { success: false, error: 'Not found' });

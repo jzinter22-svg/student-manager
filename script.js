@@ -96,6 +96,22 @@ const recentStudentsList = document.getElementById('recentStudentsList');
 
 const placeholderTitle = document.getElementById('placeholderTitle');
 
+const addTeacherBtn = document.getElementById('addTeacherBtn');
+const teacherFormCard = document.getElementById('teacherFormCard');
+const teacherFormTitle = document.getElementById('teacherFormTitle');
+const teacherForm = document.getElementById('teacherForm');
+const teacherNameInput = document.getElementById('teacherName');
+const teacherPhoneInput = document.getElementById('teacherPhone');
+const teacherSpecializationInput = document.getElementById('teacherSpecialization');
+const teacherFormError = document.getElementById('teacherFormError');
+const teacherFormSubmit = document.getElementById('teacherFormSubmit');
+const teacherFormCancel = document.getElementById('teacherFormCancel');
+const teacherSearchInput = document.getElementById('teacherSearch');
+const teachersError = document.getElementById('teachersError');
+const teachersMessage = document.getElementById('teachersMessage');
+const teachersLoading = document.getElementById('teachersLoading');
+const teachersList = document.getElementById('teachersList');
+
 const addStudentForm = document.getElementById('addStudentForm');
 const studentNameInput = document.getElementById('studentName');
 const addStudentSubmit = document.getElementById('addStudentSubmit');
@@ -112,18 +128,28 @@ const studentsList = document.getElementById('studentsList');
 const state = {
     user: null,
     students: [],
-    studentsLoadState: 'idle' // 'idle' | 'loading' | 'loaded' | 'error'
+    studentsLoadState: 'idle', // 'idle' | 'loading' | 'loaded' | 'error'
+    teachers: [],
+    teachersLoadState: 'idle',
+    editingTeacherId: null // null while adding; a teacher id while editing
 };
 
 const NAV_SECTIONS = {
     dashboard: { view: 'view-dashboard', functional: true },
     students: { view: 'view-students', functional: true },
-    teachers: { view: 'view-placeholder', functional: false, label: 'المعلمون' },
+    teachers: { view: 'view-teachers', functional: true },
     classes: { view: 'view-placeholder', functional: false, label: 'الصفوف' },
     subjects: { view: 'view-placeholder', functional: false, label: 'المواد' },
     attendance: { view: 'view-placeholder', functional: false, label: 'الحضور' },
     grades: { view: 'view-placeholder', functional: false, label: 'الدرجات' }
 };
+
+// Only owner/admin may create, update, or delete teachers (enforced by the
+// backend via requireRole -- this only controls whether the UI even shows
+// the add/edit/delete controls, it is not the actual authorization).
+function canManageTeachers() {
+    return Boolean(state.user) && (state.user.role === 'owner' || state.user.role === 'admin');
+}
 
 // ---------------------------------------------------------------------------
 // Small UI helpers
@@ -198,11 +224,15 @@ function showAppScreen(user) {
     // shows a stale list from the prior session while the new fetch runs.
     state.students = [];
     state.studentsLoadState = 'idle';
+    state.teachers = [];
+    state.teachersLoadState = 'idle';
     hideAllScreens();
     screens.app.hidden = false;
     renderUserInfo(user);
     navigateTo('dashboard');
     renderStudentDependentUI();
+    closeTeacherForm();
+    renderTeachersList();
     loadStudentsData();
 }
 
@@ -286,6 +316,9 @@ function navigateTo(section) {
 
     if (section === 'students' && state.studentsLoadState === 'idle') {
         loadStudentsData();
+    }
+    if (section === 'teachers' && state.teachersLoadState === 'idle') {
+        loadTeachersData();
     }
 
     closeMobileSidebar();
@@ -625,6 +658,198 @@ addStudentForm.addEventListener('submit', function (event) {
             handleApiError(error, 'تعذر إضافة الطالب. حاول مرة أخرى.', [studentsError]);
         }
     });
+});
+
+// ---------------------------------------------------------------------------
+// Teachers (protected; create/update/delete additionally require
+// owner/admin server-side via requireRole -- this frontend never reads,
+// stores, or sends a school_id anywhere here either)
+// ---------------------------------------------------------------------------
+
+function openTeacherForm(teacher) {
+    state.editingTeacherId = teacher ? teacher.id : null;
+    teacherFormTitle.textContent = teacher ? 'تعديل معلم' : 'إضافة معلم';
+    teacherFormSubmit.textContent = teacher ? 'حفظ التعديلات' : 'حفظ';
+    teacherNameInput.value = teacher ? teacher.name : '';
+    teacherPhoneInput.value = teacher ? teacher.phone : '';
+    teacherSpecializationInput.value = teacher ? teacher.specialization : '';
+    clearError(teacherFormError);
+    teacherFormCard.hidden = false;
+    teacherNameInput.focus();
+}
+
+function closeTeacherForm() {
+    state.editingTeacherId = null;
+    teacherForm.reset();
+    clearError(teacherFormError);
+    teacherFormCard.hidden = true;
+}
+
+addTeacherBtn.addEventListener('click', function () {
+    openTeacherForm(null);
+});
+
+teacherFormCancel.addEventListener('click', closeTeacherForm);
+
+function getFilteredTeachers() {
+    const query = teacherSearchInput.value.trim().toLowerCase();
+    if (!query) return state.teachers;
+    return state.teachers.filter(function (teacher) {
+        const name = (teacher.name || '').toLowerCase();
+        const phone = (teacher.phone || '').toLowerCase();
+        const specialization = (teacher.specialization || '').toLowerCase();
+        return name.indexOf(query) !== -1 || phone.indexOf(query) !== -1 || specialization.indexOf(query) !== -1;
+    });
+}
+
+function deleteTeacher(teacher) {
+    const confirmed = window.confirm('هل أنت متأكد من حذف المعلم "' + teacher.name + '"؟');
+    if (!confirmed) return;
+
+    clearError(teachersError);
+    clearNotice(teachersMessage);
+
+    apiFetch('/api/teachers/' + teacher.id, { method: 'DELETE' })
+        .then(function () {
+            showNotice(teachersMessage, 'تم حذف المعلم بنجاح.');
+            return loadTeachersData();
+        })
+        .catch(function (error) {
+            handleApiError(error, 'تعذر حذف المعلم. حاول مرة أخرى.', [teachersError]);
+        });
+}
+
+function buildTeacherListItem(teacher) {
+    const item = document.createElement('li');
+    item.className = 'teacher-item';
+
+    const info = document.createElement('div');
+    info.className = 'teacher-info';
+
+    const name = document.createElement('span');
+    name.className = 'teacher-name';
+    name.textContent = teacher.name;
+    info.appendChild(name);
+
+    const meta = document.createElement('span');
+    meta.className = 'teacher-meta';
+    meta.textContent = teacher.phone + ' · ' + teacher.specialization;
+    info.appendChild(meta);
+
+    item.appendChild(info);
+
+    if (canManageTeachers()) {
+        const actions = document.createElement('div');
+        actions.className = 'teacher-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn btn-secondary btn-small';
+        editBtn.textContent = 'تعديل';
+        editBtn.addEventListener('click', function () {
+            openTeacherForm(teacher);
+        });
+        actions.appendChild(editBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'btn btn-danger btn-small';
+        deleteBtn.textContent = 'حذف';
+        deleteBtn.addEventListener('click', function () {
+            deleteTeacher(teacher);
+        });
+        actions.appendChild(deleteBtn);
+
+        item.appendChild(actions);
+    }
+
+    return item;
+}
+
+function renderTeachersList() {
+    addTeacherBtn.hidden = !canManageTeachers();
+    teachersList.innerHTML = '';
+
+    if (state.teachersLoadState !== 'loaded') {
+        return;
+    }
+
+    const filtered = getFilteredTeachers();
+
+    if (filtered.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'teachers-empty';
+        empty.textContent = state.teachers.length === 0
+            ? 'لا يوجد معلمون مسجلون بعد.'
+            : 'لا توجد نتائج مطابقة للبحث.';
+        teachersList.appendChild(empty);
+        return;
+    }
+
+    filtered.forEach(function (teacher) {
+        teachersList.appendChild(buildTeacherListItem(teacher));
+    });
+}
+
+async function loadTeachersData() {
+    state.teachersLoadState = 'loading';
+    teachersLoading.hidden = false;
+    clearError(teachersError);
+
+    try {
+        const data = await apiFetch('/api/teachers', { method: 'GET' });
+        state.teachers = data.teachers || [];
+        state.teachersLoadState = 'loaded';
+    } catch (error) {
+        state.teachersLoadState = 'error';
+        handleApiError(error, 'تعذر تحميل بيانات المعلمين.', [teachersError]);
+    } finally {
+        teachersLoading.hidden = true;
+        renderTeachersList();
+    }
+}
+
+teacherSearchInput.addEventListener('input', renderTeachersList);
+
+teacherForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    clearError(teacherFormError);
+
+    const name = teacherNameInput.value.trim();
+    const phone = teacherPhoneInput.value.trim();
+    const specialization = teacherSpecializationInput.value.trim();
+
+    if (!name || !phone || !specialization) {
+        showError(teacherFormError, 'يرجى تعبئة جميع الحقول المطلوبة: اسم المعلم ورقم الهاتف والتخصص.');
+        return;
+    }
+
+    const isEditing = state.editingTeacherId !== null;
+    const url = isEditing ? '/api/teachers/' + state.editingTeacherId : '/api/teachers';
+    const method = isEditing ? 'PATCH' : 'POST';
+
+    withLoading(
+        teacherFormSubmit,
+        isEditing ? 'جاري حفظ التعديلات...' : 'جاري إضافة المعلم...',
+        async function () {
+            try {
+                await apiFetch(url, {
+                    method: method,
+                    body: JSON.stringify({ name, phone, specialization })
+                });
+                clearError(teachersError);
+                showNotice(teachersMessage, isEditing ? 'تم تحديث بيانات المعلم بنجاح.' : 'تمت إضافة المعلم بنجاح.');
+                closeTeacherForm();
+                await loadTeachersData();
+            } catch (error) {
+                handleApiError(
+                    error,
+                    isEditing ? 'تعذر حفظ التعديلات. حاول مرة أخرى.' : 'تعذر إضافة المعلم. حاول مرة أخرى.',
+                    [teacherFormError]
+                );
+            }
+        }
+    );
 });
 
 // ---------------------------------------------------------------------------

@@ -175,7 +175,61 @@
                         </div>
                     </section>
 
-                    <!-- View: Placeholder modules (teachers, classes, subjects, attendance, grades) -->
+                    <!-- View: Teachers -->
+                    <section id="view-teachers" class="view" hidden>
+                        <div class="card">
+                            <div class="section-header">
+                                <div>
+                                    <h3>المعلمون</h3>
+                                    <p class="section-subtitle">إدارة بيانات المعلمين في المدرسة</p>
+                                </div>
+                                <button type="button" class="btn btn-add" id="addTeacherBtn" hidden>+ إضافة معلم</button>
+                            </div>
+                        </div>
+
+                        <div class="card" id="teacherFormCard" hidden>
+                            <h3 id="teacherFormTitle">إضافة معلم</h3>
+                            <form id="teacherForm" novalidate>
+                                <div class="field">
+                                    <label for="teacherName">اسم المعلم *</label>
+                                    <input type="text" id="teacherName" autocomplete="off" required>
+                                </div>
+                                <div class="field">
+                                    <label for="teacherPhone">رقم الهاتف *</label>
+                                    <input type="tel" id="teacherPhone" autocomplete="off" required>
+                                </div>
+                                <div class="field">
+                                    <label for="teacherSpecialization">التخصص *</label>
+                                    <input type="text" id="teacherSpecialization" autocomplete="off" required>
+                                </div>
+
+                                <div id="teacherFormError" class="error-message" role="alert" aria-live="polite"></div>
+
+                                <div class="form-actions">
+                                    <button type="submit" class="btn" id="teacherFormSubmit">حفظ</button>
+                                    <button type="button" class="btn btn-secondary" id="teacherFormCancel">إلغاء</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <div class="card">
+                            <div class="students-list-header">
+                                <h3>قائمة المعلمين</h3>
+                                <div class="field search-field">
+                                    <label for="teacherSearch">البحث عن معلم</label>
+                                    <input type="search" id="teacherSearch" autocomplete="off" placeholder="اكتب الاسم أو الهاتف أو التخصص...">
+                                </div>
+                            </div>
+
+                            <div id="teachersError" class="error-message" role="alert" aria-live="polite"></div>
+                            <div id="teachersMessage" class="notice" role="status" aria-live="polite"></div>
+                            <p id="teachersLoading" class="init-loading" hidden>جاري تحميل البيانات...</p>
+
+                            <ul id="teachersList" class="teachers-list" aria-live="polite"></ul>
+                        </div>
+                    </section>
+
+                    <!-- View: Placeholder modules (classes, subjects, attendance, grades) -->
                     <section id="view-placeholder" class="view" hidden>
                         <div class="card">
                             <h3 id="placeholderTitle"></h3>
