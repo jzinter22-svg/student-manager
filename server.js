@@ -1,5 +1,3 @@
-process.loadEnvFile();
-
 const http = require('http');
 const { Pool } = require('pg');
 
