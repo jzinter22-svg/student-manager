@@ -145,3 +145,59 @@ The existing minimal UI (`index.html`/`script.js`) has no login form yet,
 so its "Add Student" button will now get a `401` until a login UI exists
 in a future phase — that's the expected, correct effect of requiring
 authentication.
+
+## Phase 3 — Authentication UI & Application Shell
+
+`index.html`/`script.js`/`style.css` are now a real, Arabic (`lang="ar"
+dir="rtl"`), browser-based client for the Phase 2 backend — no framework,
+no build step, same three files as before. `server.js` also now serves
+them itself (`GET /`, `/script.js`, `/style.css`) so the page and the API
+share one origin and the session cookie behaves normally.
+
+- **Login screen** — بريد إلكتروني / كلمة مرور, `تسجيل الدخول`, and a link
+  to `إنشاء مدرسة جديدة`.
+- **Registration screen** — school name/code, admin name, email,
+  password, and a client-side-only password confirmation field
+  (`كلمة المرور` / `تأكيد كلمة المرور`); mismatched passwords are caught
+  in the browser before any request is sent, with an Arabic message.
+  Registration calls the existing `POST /api/auth/register`, then — since
+  that endpoint doesn't itself start a session — immediately calls the
+  existing `POST /api/auth/login` with the same credentials, so the owner
+  lands straight in the app shell. This reuses the two existing endpoints
+  as-is; it is not a new or second authentication mechanism.
+- **Session detection** — on every load, the page calls `GET /api/auth/me`
+  and shows the app shell only if that succeeds; a `401` shows the login
+  screen. It never infers "logged in" from the mere presence of a cookie.
+- **Application shell** — shows the user's name, email, role, and school
+  name (from `/api/auth/me` / login's response), plus `إدارة الطلاب`: the
+  existing student list (`GET /api/students`) and add-student form
+  (`POST /api/students`), both calling the unmodified, session-scoped
+  endpoints.
+- **Logout** — `تسجيل الخروج` calls `POST /api/auth/logout`, which deletes
+  the session server-side (not just a UI change); the old cookie stops
+  authenticating immediately afterward.
+- **Errors** — a small set of fixed Arabic messages for the cases the task
+  specifies (bad login, registration failure, network failure, expired
+  session), plus a few additional server messages (duplicate school code,
+  duplicate email, weak password) translated to Arabic where recognized.
+  Raw server/database detail is never shown — the backend already never
+  returns any, and the frontend only reads `error`/`message` strings.
+- **Loading states** — login, register, and add-student buttons disable
+  and swap to a "جاري ..." label for the duration of their request, then
+  restore.
+- **Tenant security unchanged** — the frontend never reads, sends, or
+  offers a `school_id` anywhere; every student request is scoped entirely
+  by the session cookie on the backend, exactly as in Phase 2.
+
+**Small Phase 2 backend additions (not a rewrite):** `authenticateRequest`,
+the login query, and registration's response now also return
+`school_name` (joined from `schools`), so the app shell has something
+meaningful to show for "المدرسة" beyond a bare numeric `school_id` — the
+authentication/session/tenant-isolation logic itself is unchanged.
+
+Tested with real Chromium via Playwright (see the Phase 3 commit message
+and project history for the full test list) covering the complete
+register → shell → refresh → add student → logout → login-again →
+two-school isolation lifecycle, plus the Arabic error/validation paths,
+`localStorage`/`sessionStorage`/`document.cookie` being empty of any
+auth data, and the session cookie's `HttpOnly` flag.

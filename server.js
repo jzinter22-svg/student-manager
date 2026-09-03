@@ -1,5 +1,7 @@
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 
 const pool = new Pool({
@@ -66,6 +68,33 @@ function parseCookies(req) {
         if (key) cookies[key] = decodeURIComponent(value);
     });
     return cookies;
+}
+
+// ---------------------------------------------------------------------------
+// Static frontend files
+// ---------------------------------------------------------------------------
+// Phase 1/2 never served the frontend over HTTP at all (every GET fell
+// through to the JSON 404). A real browser session needs index.html served
+// from the SAME origin as the API so that fetch('/api/...') and the
+// HttpOnly session cookie work the ordinary same-origin way, with no CORS
+// or manual cookie handling. This is a fixed allowlist of the three
+// existing frontend files, not a general-purpose file server.
+const STATIC_FILES = {
+    '/': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
+    '/index.html': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
+    '/script.js': { file: 'script.js', contentType: 'application/javascript; charset=utf-8' },
+    '/style.css': { file: 'style.css', contentType: 'text/css; charset=utf-8' }
+};
+
+function serveStaticFile(entry, res) {
+    fs.readFile(path.join(__dirname, entry.file), (error, content) => {
+        if (error) {
+            sendJson(res, 500, { success: false, error: 'Failed to load application file' });
+            return;
+        }
+        res.writeHead(200, { 'Content-Type': entry.contentType });
+        res.end(content);
+    });
 }
 
 function buildCookieHeader(value, maxAgeSeconds) {
@@ -174,9 +203,10 @@ async function authenticateRequest(req) {
 
     const tokenHash = sha256Hex(token);
     const result = await pool.query(
-        `SELECT users.id, users.school_id, users.name, users.email, users.role
+        `SELECT users.id, users.school_id, users.name, users.email, users.role, schools.name AS school_name
          FROM sessions
          JOIN users ON users.id = sessions.user_id
+         JOIN schools ON schools.id = users.school_id
          WHERE sessions.token_hash = $1 AND sessions.expires_at > now()`,
         [tokenHash]
     );
@@ -187,6 +217,7 @@ async function authenticateRequest(req) {
     return {
         id: row.id,
         school_id: row.school_id,
+        school_name: row.school_name,
         name: row.name,
         email: row.email,
         role: row.role,
@@ -228,7 +259,8 @@ function safeUser(row) {
         name: row.name,
         email: row.email,
         role: row.role,
-        school_id: row.school_id
+        school_id: row.school_id,
+        school_name: row.school_name
     };
 }
 
@@ -294,7 +326,8 @@ async function handleRegister(req, res) {
         );
 
         await client.query('COMMIT');
-        sendJson(res, 201, { success: true, user: safeUser(userResult.rows[0]) });
+        // schoolName is already known from validated input -- no extra query needed.
+        sendJson(res, 201, { success: true, user: safeUser({ ...userResult.rows[0], school_name: schoolName }) });
     } catch (error) {
         await client.query('ROLLBACK');
         if (error.code === '23505') {
@@ -330,7 +363,11 @@ async function handleLogin(req, res) {
 
     try {
         const result = await pool.query(
-            'SELECT id, school_id, name, email, role, password_hash FROM users WHERE email = $1',
+            `SELECT users.id, users.school_id, users.name, users.email, users.role,
+                    users.password_hash, schools.name AS school_name
+             FROM users
+             JOIN schools ON schools.id = users.school_id
+             WHERE users.email = $1`,
             [email]
         );
         const userRow = result.rows[0] || null;
@@ -442,6 +479,11 @@ const routes = {
 };
 
 const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && STATIC_FILES[req.url]) {
+        serveStaticFile(STATIC_FILES[req.url], res);
+        return;
+    }
+
     const handler = routes[`${req.method} ${req.url}`];
 
     if (!handler) {

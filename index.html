@@ -3,24 +3,127 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Student Manager</title>
+    <title>Student Manager | مدير الطلاب</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <h1>Student Manager</h1>
-        <h2>مدير الطلاب</h2>
+    <div id="initialLoading" class="init-loading">
+        <p>جاري التحقق من الجلسة...</p>
+    </div>
 
-        <input
-            type="text"
-            id="studentName"
-            placeholder="أدخل اسم الطالب"
-            class="input-field"
-        >
+    <div class="page">
 
-        <button id="addButton" class="btn">إضافة الطالب</button>
+        <!-- Screen: Login -->
+        <section id="screen-login" class="card auth-card" hidden>
+            <h1>Student Manager</h1>
+            <h2>مدير الطلاب</h2>
 
-        <div id="message" class="message"></div>
+            <div id="loginNotice" class="notice" role="status" aria-live="polite"></div>
+
+            <form id="loginForm" novalidate>
+                <div class="field">
+                    <label for="loginEmail">البريد الإلكتروني</label>
+                    <input type="email" id="loginEmail" name="email" autocomplete="email" required>
+                </div>
+                <div class="field">
+                    <label for="loginPassword">كلمة المرور</label>
+                    <input type="password" id="loginPassword" name="password" autocomplete="current-password" required>
+                </div>
+
+                <div id="loginError" class="error-message" role="alert" aria-live="polite"></div>
+
+                <button type="submit" class="btn" id="loginSubmit">تسجيل الدخول</button>
+            </form>
+
+            <button type="button" class="btn-link" id="showRegisterBtn">إنشاء مدرسة جديدة</button>
+        </section>
+
+        <!-- Screen: School registration -->
+        <section id="screen-register" class="card auth-card" hidden>
+            <h1>إنشاء مدرسة جديدة</h1>
+            <h2>Register a New School</h2>
+
+            <form id="registerForm" novalidate>
+                <div class="field">
+                    <label for="regSchoolName">اسم المدرسة</label>
+                    <input type="text" id="regSchoolName" required>
+                </div>
+                <div class="field">
+                    <label for="regSchoolCode">رمز المدرسة</label>
+                    <input type="text" id="regSchoolCode" required>
+                </div>
+                <div class="field">
+                    <label for="regUserName">اسم المدير</label>
+                    <input type="text" id="regUserName" required>
+                </div>
+                <div class="field">
+                    <label for="regEmail">البريد الإلكتروني</label>
+                    <input type="email" id="regEmail" autocomplete="email" required>
+                </div>
+                <div class="field">
+                    <label for="regPassword">كلمة المرور</label>
+                    <input type="password" id="regPassword" autocomplete="new-password" minlength="8" required>
+                </div>
+                <div class="field">
+                    <label for="regPasswordConfirm">تأكيد كلمة المرور</label>
+                    <input type="password" id="regPasswordConfirm" autocomplete="new-password" minlength="8" required>
+                </div>
+
+                <div id="registerError" class="error-message" role="alert" aria-live="polite"></div>
+
+                <button type="submit" class="btn" id="registerSubmit">إنشاء المدرسة</button>
+            </form>
+
+            <button type="button" class="btn-link" id="showLoginBtn">العودة إلى تسجيل الدخول</button>
+        </section>
+
+        <!-- Screen: Authenticated application shell -->
+        <section id="screen-app" hidden>
+            <header class="app-header card">
+                <div class="app-header-titles">
+                    <h1>Student Manager</h1>
+                    <h2>مدير الطلاب</h2>
+                </div>
+                <button type="button" class="btn btn-secondary" id="logoutBtn">تسجيل الخروج</button>
+            </header>
+
+            <div class="card user-info">
+                <div class="info-item">
+                    <span class="info-label">المدرسة</span>
+                    <span class="info-value" id="infoSchool"></span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">اسم المستخدم</span>
+                    <span class="info-value" id="infoName"></span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">البريد الإلكتروني</span>
+                    <span class="info-value" id="infoEmail"></span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">الدور</span>
+                    <span class="info-value" id="infoRole"></span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>إدارة الطلاب</h3>
+
+                <form id="addStudentForm" class="inline-form" novalidate>
+                    <div class="field">
+                        <label for="studentName">اسم الطالب</label>
+                        <input type="text" id="studentName" autocomplete="off" required>
+                    </div>
+                    <button type="submit" class="btn" id="addStudentSubmit">إضافة الطالب</button>
+                </form>
+
+                <div id="studentsError" class="error-message" role="alert" aria-live="polite"></div>
+                <div id="studentsMessage" class="notice" role="status" aria-live="polite"></div>
+
+                <ul id="studentsList" class="students-list" aria-live="polite"></ul>
+            </div>
+        </section>
+
     </div>
 
     <script src="script.js"></script>
