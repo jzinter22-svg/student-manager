@@ -77,17 +77,53 @@ const registerSubmit = document.getElementById('registerSubmit');
 const showLoginBtn = document.getElementById('showLoginBtn');
 
 const logoutBtn = document.getElementById('logoutBtn');
-const infoSchool = document.getElementById('infoSchool');
-const infoName = document.getElementById('infoName');
-const infoEmail = document.getElementById('infoEmail');
-const infoRole = document.getElementById('infoRole');
+const headerUserName = document.getElementById('headerUserName');
+const headerUserRole = document.getElementById('headerUserRole');
+const headerUserSchool = document.getElementById('headerUserSchool');
+
+const menuToggle = document.getElementById('menuToggle');
+const sidebarNav = document.getElementById('sidebarNav');
+const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+const navItems = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
+
+const welcomeGreeting = document.getElementById('welcomeGreeting');
+const welcomeSchool = document.getElementById('welcomeSchool');
+const dashboardError = document.getElementById('dashboardError');
+const statTotalStudents = document.getElementById('statTotalStudents');
+const qaAddStudent = document.getElementById('qaAddStudent');
+const qaViewStudents = document.getElementById('qaViewStudents');
+const recentStudentsList = document.getElementById('recentStudentsList');
+
+const placeholderTitle = document.getElementById('placeholderTitle');
 
 const addStudentForm = document.getElementById('addStudentForm');
 const studentNameInput = document.getElementById('studentName');
 const addStudentSubmit = document.getElementById('addStudentSubmit');
 const studentsError = document.getElementById('studentsError');
 const studentsMessage = document.getElementById('studentsMessage');
+const studentsLoading = document.getElementById('studentsLoading');
+const studentSearchInput = document.getElementById('studentSearch');
 const studentsList = document.getElementById('studentsList');
+
+// Application state. state.students is the authenticated school's full
+// student dataset, loaded once and reused by both the dashboard and the
+// students view -- re-fetched only after a mutation (adding a student) or
+// an explicit retry, never on every small UI interaction.
+const state = {
+    user: null,
+    students: [],
+    studentsLoadState: 'idle' // 'idle' | 'loading' | 'loaded' | 'error'
+};
+
+const NAV_SECTIONS = {
+    dashboard: { view: 'view-dashboard', functional: true },
+    students: { view: 'view-students', functional: true },
+    teachers: { view: 'view-placeholder', functional: false, label: 'المعلمون' },
+    classes: { view: 'view-placeholder', functional: false, label: 'الصفوف' },
+    subjects: { view: 'view-placeholder', functional: false, label: 'المواد' },
+    attendance: { view: 'view-placeholder', functional: false, label: 'الحضور' },
+    grades: { view: 'view-placeholder', functional: false, label: 'الدرجات' }
+};
 
 // ---------------------------------------------------------------------------
 // Small UI helpers
@@ -156,10 +192,18 @@ function showRegisterScreen() {
 }
 
 function showAppScreen(user) {
+    state.user = user;
+    // Reset any previous session's cached student data before rendering,
+    // so switching users (logout -> login as someone else) never briefly
+    // shows a stale list from the prior session while the new fetch runs.
+    state.students = [];
+    state.studentsLoadState = 'idle';
     hideAllScreens();
     screens.app.hidden = false;
     renderUserInfo(user);
-    loadStudents();
+    navigateTo('dashboard');
+    renderStudentDependentUI();
+    loadStudentsData();
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +212,7 @@ function showAppScreen(user) {
 
 // The backend session cookie is the only source of truth for authentication.
 // This never assumes a logged-in state just because a cookie is present --
-// it always asks the server via GET /api/auth/me.
+// it always asks the server via GET /api/auth/me. Called once at startup.
 async function checkAuth() {
     try {
         const data = await apiFetch('/api/auth/me', { method: 'GET' });
@@ -181,11 +225,102 @@ async function checkAuth() {
 }
 
 function renderUserInfo(user) {
-    infoSchool.textContent = user.school_name || '';
-    infoName.textContent = user.name || '';
-    infoEmail.textContent = user.email || '';
-    infoRole.textContent = translateRole(user.role);
+    headerUserName.textContent = user.name || '';
+    headerUserName.title = user.email || '';
+    headerUserRole.textContent = translateRole(user.role);
+    headerUserSchool.textContent = user.school_name || '';
+    welcomeGreeting.textContent = 'مرحباً، ' + (user.name || '');
+    welcomeSchool.textContent = user.school_name || '';
 }
+
+// ---------------------------------------------------------------------------
+// Navigation (dashboard shell, sidebar, mobile drawer)
+// ---------------------------------------------------------------------------
+
+function setActiveNavItem(section) {
+    navItems.forEach(function (btn) {
+        const isActive = btn.dataset.section === section;
+        btn.classList.toggle('active', isActive);
+        if (isActive) {
+            btn.setAttribute('aria-current', 'page');
+        } else {
+            btn.removeAttribute('aria-current');
+        }
+    });
+}
+
+function showView(viewId) {
+    document.querySelectorAll('.view').forEach(function (view) {
+        view.hidden = view.id !== viewId;
+    });
+}
+
+function openMobileSidebar() {
+    sidebarNav.classList.add('open');
+    sidebarBackdrop.hidden = false;
+    menuToggle.setAttribute('aria-expanded', 'true');
+}
+
+function closeMobileSidebar() {
+    sidebarNav.classList.remove('open');
+    sidebarBackdrop.hidden = true;
+    menuToggle.setAttribute('aria-expanded', 'false');
+}
+
+// Lightweight client-side "router": switches which view is visible and
+// keeps the sidebar's active state in sync. Placeholder sections (teachers,
+// classes, ...) all render the same view-placeholder section with a
+// different title -- no fake CRUD UI is built for them.
+function navigateTo(section) {
+    const config = NAV_SECTIONS[section];
+    if (!config) return;
+
+    setActiveNavItem(section);
+
+    if (config.functional) {
+        showView(config.view);
+    } else {
+        placeholderTitle.textContent = config.label;
+        showView(config.view);
+    }
+
+    if (section === 'students' && state.studentsLoadState === 'idle') {
+        loadStudentsData();
+    }
+
+    closeMobileSidebar();
+}
+
+navItems.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        navigateTo(btn.dataset.section);
+    });
+});
+
+menuToggle.addEventListener('click', function () {
+    if (sidebarNav.classList.contains('open')) {
+        closeMobileSidebar();
+    } else {
+        openMobileSidebar();
+    }
+});
+
+sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+
+document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && sidebarNav.classList.contains('open')) {
+        closeMobileSidebar();
+    }
+});
+
+qaAddStudent.addEventListener('click', function () {
+    navigateTo('students');
+    studentNameInput.focus();
+});
+
+qaViewStudents.addEventListener('click', function () {
+    navigateTo('students');
+});
 
 // ---------------------------------------------------------------------------
 // Login
@@ -330,53 +465,141 @@ logoutBtn.addEventListener('click', function () {
 
 // ---------------------------------------------------------------------------
 // Students (protected, tenant-scoped entirely by the backend session --
-// this frontend never sends a school_id anywhere)
+// this frontend never reads, stores, or sends a school_id anywhere; every
+// request below relies solely on the authenticated session cookie)
 // ---------------------------------------------------------------------------
 
-function handleSessionError(error, errorEl) {
+// Shared by every failure path below: a 401 always means the session is no
+// longer valid server-side, regardless of which request triggered it.
+function handleApiError(error, defaultMessage, errorEls) {
     if (error.status === 401) {
         showLoginScreen();
         showNotice(loginNotice, 'انتهت جلسة تسجيل الدخول. يرجى تسجيل الدخول مرة أخرى.');
-        return true;
+        return;
     }
-    if (error.isNetworkError) {
-        showError(errorEl, 'تعذر الاتصال بالخادم. حاول مرة أخرى.');
-        return true;
-    }
-    showError(errorEl, 'حدث خطأ غير متوقع. حاول مرة أخرى.');
-    return true;
+    const message = error.isNetworkError ? 'تعذر الاتصال بالخادم. حاول مرة أخرى.' : defaultMessage;
+    (errorEls || []).forEach(function (el) {
+        showError(el, message);
+    });
 }
 
-function renderStudents(students) {
+function buildStudentListItem(student) {
+    const item = document.createElement('li');
+
+    const name = document.createElement('span');
+    name.className = 'student-name';
+    name.textContent = student.name;
+    item.appendChild(name);
+
+    if (student.student_code) {
+        const code = document.createElement('span');
+        code.className = 'student-code';
+        code.textContent = student.student_code;
+        item.appendChild(code);
+    }
+
+    return item;
+}
+
+function getFilteredStudents() {
+    const query = studentSearchInput.value.trim().toLowerCase();
+    if (!query) return state.students;
+    return state.students.filter(function (student) {
+        const name = (student.name || '').toLowerCase();
+        const code = (student.student_code || '').toLowerCase();
+        return name.indexOf(query) !== -1 || code.indexOf(query) !== -1;
+    });
+}
+
+function renderStudentsList() {
     studentsList.innerHTML = '';
 
-    if (!students || students.length === 0) {
+    if (state.studentsLoadState !== 'loaded') {
+        return;
+    }
+
+    const filtered = getFilteredStudents();
+
+    if (filtered.length === 0) {
         const empty = document.createElement('li');
         empty.className = 'students-empty';
-        empty.textContent = 'لا يوجد طلاب بعد.';
+        empty.textContent = state.students.length === 0
+            ? 'لا يوجد طلاب مسجلون بعد.'
+            : 'لا توجد نتائج مطابقة للبحث.';
         studentsList.appendChild(empty);
         return;
     }
 
-    students.forEach(function (student) {
-        const item = document.createElement('li');
-        const name = document.createElement('span');
-        name.className = 'student-name';
-        name.textContent = student.name;
-        item.appendChild(name);
-        studentsList.appendChild(item);
+    filtered.forEach(function (student) {
+        studentsList.appendChild(buildStudentListItem(student));
     });
 }
 
-async function loadStudents() {
-    clearError(studentsError);
-    try {
-        const data = await apiFetch('/api/students', { method: 'GET' });
-        renderStudents(data.students);
-    } catch (error) {
-        handleSessionError(error, studentsError);
+function renderRecentStudents() {
+    recentStudentsList.innerHTML = '';
+
+    if (state.studentsLoadState !== 'loaded') {
+        return;
+    }
+
+    if (state.students.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'students-empty';
+        empty.textContent = 'لا يوجد طلاب حديثون.';
+        recentStudentsList.appendChild(empty);
+        return;
+    }
+
+    // Most recently created first.
+    state.students.slice(-5).reverse().forEach(function (student) {
+        recentStudentsList.appendChild(buildStudentListItem(student));
+    });
+}
+
+function renderDashboardStats() {
+    if (state.studentsLoadState === 'loaded') {
+        statTotalStudents.textContent = String(state.students.length);
+        statTotalStudents.classList.remove('stat-value-muted');
+    } else if (state.studentsLoadState === 'error') {
+        statTotalStudents.textContent = 'لا توجد بيانات كافية لعرض الإحصاءات بعد.';
+        statTotalStudents.classList.add('stat-value-muted');
+    } else {
+        statTotalStudents.textContent = '—';
+        statTotalStudents.classList.add('stat-value-muted');
     }
 }
+
+// Keeps the dashboard stat, the recent-students list, and the full
+// students list all consistent with whatever state.students currently is.
+function renderStudentDependentUI() {
+    renderDashboardStats();
+    renderRecentStudents();
+    renderStudentsList();
+}
+
+// Fetches the authenticated school's students once and updates every view
+// that depends on them (dashboard stat, recent students, students list).
+// Called at login and after adding a student -- not on every navigation.
+async function loadStudentsData() {
+    state.studentsLoadState = 'loading';
+    studentsLoading.hidden = false;
+    clearError(dashboardError);
+    clearError(studentsError);
+
+    try {
+        const data = await apiFetch('/api/students', { method: 'GET' });
+        state.students = data.students || [];
+        state.studentsLoadState = 'loaded';
+    } catch (error) {
+        state.studentsLoadState = 'error';
+        handleApiError(error, 'تعذر تحميل بيانات الطلاب.', [dashboardError, studentsError]);
+    } finally {
+        studentsLoading.hidden = true;
+        renderStudentDependentUI();
+    }
+}
+
+studentSearchInput.addEventListener('input', renderStudentsList);
 
 addStudentForm.addEventListener('submit', function (event) {
     event.preventDefault();
@@ -389,7 +612,7 @@ addStudentForm.addEventListener('submit', function (event) {
         return;
     }
 
-    withLoading(addStudentSubmit, 'جاري الإضافة...', async function () {
+    withLoading(addStudentSubmit, 'جاري إضافة الطالب...', async function () {
         try {
             await apiFetch('/api/students', {
                 method: 'POST',
@@ -397,9 +620,9 @@ addStudentForm.addEventListener('submit', function (event) {
             });
             studentNameInput.value = '';
             showNotice(studentsMessage, 'تمت إضافة الطالب بنجاح.');
-            await loadStudents();
+            await loadStudentsData();
         } catch (error) {
-            handleSessionError(error, studentsError);
+            handleApiError(error, 'تعذر إضافة الطالب. حاول مرة أخرى.', [studentsError]);
         }
     });
 });

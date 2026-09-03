@@ -78,49 +78,112 @@
         </section>
 
         <!-- Screen: Authenticated application shell -->
-        <section id="screen-app" hidden>
-            <header class="app-header card">
+        <section id="screen-app" class="app-shell" hidden>
+            <header class="app-header">
+                <button type="button" class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="sidebarNav" aria-label="فتح قائمة التنقل">☰</button>
+
                 <div class="app-header-titles">
                     <h1>Student Manager</h1>
-                    <h2>مدير الطلاب</h2>
+                    <h2>نظام إدارة الطلاب</h2>
                 </div>
-                <button type="button" class="btn btn-secondary" id="logoutBtn">تسجيل الخروج</button>
+
+                <div class="header-user">
+                    <div class="header-user-info">
+                        <span class="header-user-name" id="headerUserName"></span>
+                        <span class="header-user-meta">
+                            <span id="headerUserRole"></span> · <span id="headerUserSchool"></span>
+                        </span>
+                    </div>
+                    <button type="button" class="btn btn-secondary" id="logoutBtn">تسجيل الخروج</button>
+                </div>
             </header>
 
-            <div class="card user-info">
-                <div class="info-item">
-                    <span class="info-label">المدرسة</span>
-                    <span class="info-value" id="infoSchool"></span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">اسم المستخدم</span>
-                    <span class="info-value" id="infoName"></span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">البريد الإلكتروني</span>
-                    <span class="info-value" id="infoEmail"></span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">الدور</span>
-                    <span class="info-value" id="infoRole"></span>
-                </div>
-            </div>
+            <div class="app-body">
+                <nav id="sidebarNav" class="sidebar" aria-label="التنقل الرئيسي">
+                    <ul class="nav-list">
+                        <li><button type="button" class="nav-item" data-section="dashboard">الرئيسية</button></li>
+                        <li><button type="button" class="nav-item" data-section="students">الطلاب</button></li>
+                        <li><button type="button" class="nav-item" data-section="teachers">المعلمون</button></li>
+                        <li><button type="button" class="nav-item" data-section="classes">الصفوف</button></li>
+                        <li><button type="button" class="nav-item" data-section="subjects">المواد</button></li>
+                        <li><button type="button" class="nav-item" data-section="attendance">الحضور</button></li>
+                        <li><button type="button" class="nav-item" data-section="grades">الدرجات</button></li>
+                    </ul>
+                </nav>
 
-            <div class="card">
-                <h3>إدارة الطلاب</h3>
+                <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
 
-                <form id="addStudentForm" class="inline-form" novalidate>
-                    <div class="field">
-                        <label for="studentName">اسم الطالب</label>
-                        <input type="text" id="studentName" autocomplete="off" required>
-                    </div>
-                    <button type="submit" class="btn" id="addStudentSubmit">إضافة الطالب</button>
-                </form>
+                <main id="mainContent" class="main-content">
 
-                <div id="studentsError" class="error-message" role="alert" aria-live="polite"></div>
-                <div id="studentsMessage" class="notice" role="status" aria-live="polite"></div>
+                    <!-- View: Dashboard -->
+                    <section id="view-dashboard" class="view">
+                        <div class="card welcome-card">
+                            <h3 id="welcomeGreeting"></h3>
+                            <p id="welcomeSchool" class="welcome-school"></p>
+                        </div>
 
-                <ul id="studentsList" class="students-list" aria-live="polite"></ul>
+                        <div id="dashboardError" class="error-message" role="alert" aria-live="polite"></div>
+
+                        <div class="stats-row">
+                            <div class="card stat-card">
+                                <span class="stat-label">إجمالي الطلاب</span>
+                                <span class="stat-value" id="statTotalStudents">—</span>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <h3>إجراءات سريعة</h3>
+                            <div class="quick-actions">
+                                <button type="button" class="btn" id="qaAddStudent">إضافة طالب</button>
+                                <button type="button" class="btn btn-secondary" id="qaViewStudents">عرض الطلاب</button>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <h3>أحدث الطلاب</h3>
+                            <ul id="recentStudentsList" class="students-list" aria-live="polite"></ul>
+                        </div>
+                    </section>
+
+                    <!-- View: Students -->
+                    <section id="view-students" class="view" hidden>
+                        <div class="card">
+                            <h3>إدارة الطلاب</h3>
+
+                            <form id="addStudentForm" class="inline-form" novalidate>
+                                <div class="field">
+                                    <label for="studentName">اسم الطالب</label>
+                                    <input type="text" id="studentName" autocomplete="off" required>
+                                </div>
+                                <button type="submit" class="btn" id="addStudentSubmit">إضافة الطالب</button>
+                            </form>
+
+                            <div id="studentsError" class="error-message" role="alert" aria-live="polite"></div>
+                            <div id="studentsMessage" class="notice" role="status" aria-live="polite"></div>
+                        </div>
+
+                        <div class="card">
+                            <div class="students-list-header">
+                                <h3>قائمة الطلاب</h3>
+                                <div class="field search-field">
+                                    <label for="studentSearch">البحث عن طالب</label>
+                                    <input type="search" id="studentSearch" autocomplete="off" placeholder="اكتب اسم الطالب...">
+                                </div>
+                            </div>
+                            <p id="studentsLoading" class="init-loading" hidden>جاري تحميل البيانات...</p>
+                            <ul id="studentsList" class="students-list" aria-live="polite"></ul>
+                        </div>
+                    </section>
+
+                    <!-- View: Placeholder modules (teachers, classes, subjects, attendance, grades) -->
+                    <section id="view-placeholder" class="view" hidden>
+                        <div class="card">
+                            <h3 id="placeholderTitle"></h3>
+                            <p>هذه الوحدة ستكون متاحة في مرحلة لاحقة.</p>
+                        </div>
+                    </section>
+
+                </main>
             </div>
         </section>
 

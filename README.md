@@ -201,3 +201,61 @@ register → shell → refresh → add student → logout → login-again →
 two-school isolation lifecycle, plus the Arabic error/validation paths,
 `localStorage`/`sessionStorage`/`document.cookie` being empty of any
 auth data, and the session cookie's `HttpOnly` flag.
+
+## Phase 4 — Core Application Dashboard & Navigation Shell
+
+The flat authenticated screen from Phase 3 is now a real dashboard shell:
+a persistent header, a sidebar navigation (an off-canvas drawer on
+tablet/mobile, `≤768px`), and a main content area that swaps between
+views client-side — still `index.html`/`script.js`/`style.css`, no
+router library, no framework. **Zero backend or database changes** were
+needed for this phase; every number and list shown is real data from the
+existing, unmodified `GET /api/students`.
+
+- **Header** — `Student Manager` / `نظام إدارة الطلاب`, the authenticated
+  user's name, role, and school name (from the same `/api/auth/me` /
+  login response as before), and `تسجيل الخروج`, which still calls the
+  one existing `POST /api/auth/logout` — no second logout path.
+- **Sidebar navigation** — `الرئيسية` (dashboard) and `الطلاب` (students)
+  are functional; `المعلمون`, `الصفوف`, `المواد`, `الحضور`, `الدرجات` are
+  placeholders that show "هذه الوحدة ستكون متاحة في مرحلة لاحقة." and
+  nothing else — no fake CRUD UI. The active item is marked both visually
+  and with `aria-current="page"`.
+- **Dashboard** — a welcome line built from the authenticated user's real
+  name/school, a real `إجمالي الطلاب` count derived from the length of
+  the array `GET /api/students` returns (no separate stats endpoint), a
+  small quick-actions block (`إضافة طالب` / `عرض الطلاب`, both just
+  navigate to the Students view), and an `أحدث الطلاب` list of the 5
+  most-recently-created real students. Correct empty states
+  ("لا يوجد طلاب حديثون.") replace fake placeholder rows when a school has
+  no students yet.
+- **Students module** — the existing add-student form and
+  `GET`/`POST /api/students` integration from Phase 3, now showing each
+  student's `student_code` when the backend returns one, plus a
+  client-side-only `البحث عن طالب` field that filters the already-loaded
+  list by name/code — no new search endpoint.
+- **Data consistency, not redundant requests** — the student list is
+  fetched once when the app shell opens (feeding the dashboard count,
+  the recent list, and the students list all at once) and re-fetched
+  only after a student is actually added; switching between Dashboard
+  and Students never re-fetches. Logging out and back in as a different
+  user resets this cached data immediately, so a new session never
+  briefly shows the previous session's list.
+- **Responsive** — tested at 375px, 768px, 1024px, and a wider desktop
+  width; the sidebar becomes a slide-in drawer (with a dismissable
+  backdrop and Escape-to-close) below 768px, and no view produces
+  horizontal page overflow at any of them.
+- **Authentication/session/tenant isolation unchanged** — `GET
+  /api/auth/me` is still the only source of truth for being logged in,
+  refresh and logout behave exactly as in Phase 3, and the frontend still
+  never reads, stores, or sends a `school_id` anywhere; every dashboard
+  number and list is scoped entirely by the backend session, re-verified
+  in this phase with a full two-school regression test through the real
+  dashboard UI.
+
+Tested with real Chromium via Playwright: the full
+register → dashboard → students → add student → dashboard count updates
+→ refresh → logout → login-again → two-school isolation lifecycle, every
+placeholder nav item, the client-side search filter, the mobile drawer
+(open/close/backdrop/auto-close-on-navigate), and no horizontal overflow
+at 375/768/1024px — 39 assertions, all passing.
