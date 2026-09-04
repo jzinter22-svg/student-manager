@@ -399,3 +399,105 @@ UI (each owner sees only their own school's classes). A full Phase 1–5
 regression (registration, login, student creation, teacher creation,
 dashboard count, session refresh, mobile drawer, logout) passed
 alongside the new module.
+
+## Phase 7 — Subjects Management
+
+`المواد` is now a real CRUD module with a relationship the earlier
+modules don't have: **every subject belongs to exactly one teacher, and
+one teacher can have many subjects** — a plain one-to-many via
+`subjects.teacher_id`, not a many-to-many junction table. Subject names
+are always typed by the user; there is no predefined catalog anywhere in
+the code.
+
+**Schema change:** `subjects.teacher_id INTEGER NOT NULL REFERENCES
+teachers(id) ON DELETE CASCADE` (plus `idx_subjects_teacher_id`). This
+was a direct schema addition, not a live migration — no code path before
+this phase ever inserted a subject row (`المواد` was a placeholder
+through Phase 1–6), so there were no existing records to preserve,
+backfill, or risk orphaning. `ON DELETE CASCADE` was chosen (not `SET
+NULL`, which isn't possible on a `NOT NULL` column anyway, and not
+`RESTRICT`) because a subject without a teacher would violate the
+required invariant — deleting a teacher must take their subjects with
+it, consistent with this schema's existing convention of cascading
+deletes downward through ownership.
+
+**A small necessary auth enrichment:** `authenticateRequest` and the
+login query now `LEFT JOIN teachers ON teachers.user_id = users.id AND
+teachers.school_id = users.school_id`, and `safeUser()` exposes the
+result as `teacher_id` (`null` for non-teacher roles or a teacher-role
+user with no linked record). This mirrors how `school_name` was added in
+Phase 3 — the frontend needs it to decide which subjects show edit/delete
+controls for a teacher-role user. It changes nothing about how
+authentication or sessions work, and the API remains the sole
+enforcement point regardless of what this value is.
+
+**API** (all tenant-scoped by `req.user.school_id`; `GET` additionally
+joins `teachers` so the response already carries `teacher_name` — no
+per-subject follow-up request):
+
+- `GET /api/subjects` — any authenticated role; ordered `created_at DESC,
+  id DESC`.
+- `POST /api/subjects` — owner/admin/teacher (staff gets `403` at the
+  route gate). Requires a non-empty `name`. For **owner/admin**,
+  `teacher_id` is required and is verified with `SELECT id FROM teachers
+  WHERE id = $1 AND school_id = $2` before the insert — a teacher from
+  another school, or a missing one, is rejected with `400`. For
+  **teacher**, `teacher_id` is never read from the request at all;
+  `req.user.teacherId` (resolved server-side above) is used instead, so a
+  forged `teacher_id` in the body is silently ignored, not merely
+  overridden after validation. A teacher-role user with no linked
+  `teachers` row gets a clear `400` and keeps read access.
+- `PATCH /api/subjects/:id` — same role gate. Owner/admin can change
+  `name`/`code`/`teacher_id` (the new teacher validated the same way as
+  create) on any subject in their school. A teacher can change only
+  `name`/`code`, only on a subject where `teacher_id` already equals
+  their own (`WHERE id = $1 AND school_id = $2 AND teacher_id = $3`), and
+  `teacher_id` is absent from the `SET` list entirely for that branch —
+  there is no code path where a teacher's request could reassign
+  ownership, forged or not.
+- `DELETE /api/subjects/:id` — same role gate and the same
+  owner/admin-any-subject vs. teacher-own-subject-only split as `PATCH`.
+- `subjects.name` stays `UNIQUE (school_id, name)` (Phase 1's original
+  constraint, unchanged) — a duplicate is rejected with a clear message,
+  and the same name is free to reuse in a different school.
+
+**Frontend** — same add/edit-toggle pattern as Teachers/Classes. For
+owner/admin, the `المعلم` `<select>` is populated from the already-used
+`GET /api/teachers` data (lazy-loaded if not already fetched) — never a
+hardcoded list. For a teacher-role user, the selector is hidden entirely
+and replaced with a one-line note that the subject will be assigned to
+them automatically; the actual assignment happens server-side regardless
+of anything the page does. Each subject's edit/delete buttons render only
+when `canManageSubject()` — true for owner/admin always, true for a
+teacher only when the subject's `teacher_id` matches their own
+(`state.user.teacher_id`, the value from the auth enrichment above) —
+this is a UX layer only, since the API enforces the real rule
+independently.
+
+Tested with real Chromium via Playwright (37 assertions) plus curl for
+scenarios a single browser session can't easily set up (multiple
+teacher-role accounts linked to different `teachers` rows, which only a
+direct DB insert can create since registration only ever creates an
+owner): unauthenticated `401` on `GET`; all four roles get `200` on read;
+owner/admin/teacher can create while staff gets `403`; a forged
+`teacher_id` from a teacher-role request is provably ignored (the subject
+lands under the authenticated teacher, not the forged one) on both create
+and update; a teacher gets `404` (not `403`) attempting to
+read-by-ID-via-update, update, or delete another teacher's subject, and
+that other subject is verified unchanged afterward; an unlinked
+teacher-role account gets a clear error on write but keeps read access;
+owner/admin can legitimately reassign a subject's teacher within the
+school and are rejected assigning one from another school; duplicate
+names rejected within a school, the same name accepted in a different
+school; a SQL-injection-shaped name stored as inert text; `ON DELETE
+CASCADE` verified directly (deleting a teacher with subjects removes
+those subjects, leaving no orphans); the full add → search → edit →
+delete lifecycle through the real UI, including the dynamic teacher
+dropdown, the auto-assignment note for teacher-role users, and
+per-subject ownership-based button visibility (verified against two
+different teacher accounts in the same school); no horizontal overflow
+at 375/768/1024px; the mandatory two-school regression, both at the API
+level (cross-school `GET`/`PATCH`/`DELETE` all correctly blocked) and
+through the real UI; and a full Phase 1–6 regression (registration,
+login, student/teacher/class creation, dashboard, session refresh,
+logout) passed alongside the new module.

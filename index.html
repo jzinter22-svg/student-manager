@@ -283,7 +283,64 @@
                         </div>
                     </section>
 
-                    <!-- View: Placeholder modules (subjects, attendance, grades) -->
+                    <!-- View: Subjects -->
+                    <section id="view-subjects" class="view" hidden>
+                        <div class="card">
+                            <div class="section-header">
+                                <div>
+                                    <h3>المواد</h3>
+                                    <p class="section-subtitle">إدارة المواد الدراسية والمعلم المسؤول عن كل مادة</p>
+                                </div>
+                                <button type="button" class="btn btn-add" id="addSubjectBtn" hidden>+ إضافة مادة</button>
+                            </div>
+                        </div>
+
+                        <div class="card" id="subjectFormCard" hidden>
+                            <h3 id="subjectFormTitle">إضافة مادة</h3>
+                            <form id="subjectForm" novalidate>
+                                <div class="field">
+                                    <label for="subjectName">اسم المادة *</label>
+                                    <input type="text" id="subjectName" autocomplete="off" required>
+                                </div>
+                                <div class="field">
+                                    <label for="subjectCode">رمز المادة</label>
+                                    <input type="text" id="subjectCode" autocomplete="off">
+                                </div>
+                                <div class="field" id="subjectTeacherField">
+                                    <label for="subjectTeacher">المعلم *</label>
+                                    <select id="subjectTeacher">
+                                        <option value="">اختر المعلم...</option>
+                                    </select>
+                                </div>
+                                <p id="subjectTeacherNote" class="section-subtitle" hidden>ستُسند هذه المادة إليك تلقائيًا كمعلم.</p>
+
+                                <div id="subjectFormError" class="error-message" role="alert" aria-live="polite"></div>
+
+                                <div class="form-actions">
+                                    <button type="submit" class="btn" id="subjectFormSubmit">حفظ</button>
+                                    <button type="button" class="btn btn-secondary" id="subjectFormCancel">إلغاء</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <div class="card">
+                            <div class="students-list-header">
+                                <h3>قائمة المواد</h3>
+                                <div class="field search-field">
+                                    <label for="subjectSearch">البحث عن مادة</label>
+                                    <input type="search" id="subjectSearch" autocomplete="off" placeholder="اكتب اسم المادة أو الرمز أو اسم المعلم...">
+                                </div>
+                            </div>
+
+                            <div id="subjectsError" class="error-message" role="alert" aria-live="polite"></div>
+                            <div id="subjectsMessage" class="notice" role="status" aria-live="polite"></div>
+                            <p id="subjectsLoading" class="init-loading" hidden>جاري تحميل البيانات...</p>
+
+                            <ul id="subjectsList" class="teachers-list" aria-live="polite"></ul>
+                        </div>
+                    </section>
+
+                    <!-- View: Placeholder modules (attendance, grades) -->
                     <section id="view-placeholder" class="view" hidden>
                         <div class="card">
                             <h3 id="placeholderTitle"></h3>

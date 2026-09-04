@@ -128,6 +128,24 @@ const classesMessage = document.getElementById('classesMessage');
 const classesLoading = document.getElementById('classesLoading');
 const classesList = document.getElementById('classesList');
 
+const addSubjectBtn = document.getElementById('addSubjectBtn');
+const subjectFormCard = document.getElementById('subjectFormCard');
+const subjectFormTitle = document.getElementById('subjectFormTitle');
+const subjectForm = document.getElementById('subjectForm');
+const subjectNameInput = document.getElementById('subjectName');
+const subjectCodeInput = document.getElementById('subjectCode');
+const subjectTeacherField = document.getElementById('subjectTeacherField');
+const subjectTeacherSelect = document.getElementById('subjectTeacher');
+const subjectTeacherNote = document.getElementById('subjectTeacherNote');
+const subjectFormError = document.getElementById('subjectFormError');
+const subjectFormSubmit = document.getElementById('subjectFormSubmit');
+const subjectFormCancel = document.getElementById('subjectFormCancel');
+const subjectSearchInput = document.getElementById('subjectSearch');
+const subjectsError = document.getElementById('subjectsError');
+const subjectsMessage = document.getElementById('subjectsMessage');
+const subjectsLoading = document.getElementById('subjectsLoading');
+const subjectsList = document.getElementById('subjectsList');
+
 const addStudentForm = document.getElementById('addStudentForm');
 const studentNameInput = document.getElementById('studentName');
 const addStudentSubmit = document.getElementById('addStudentSubmit');
@@ -150,7 +168,10 @@ const state = {
     editingTeacherId: null, // null while adding; a teacher id while editing
     classes: [],
     classesLoadState: 'idle',
-    editingClassId: null
+    editingClassId: null,
+    subjects: [],
+    subjectsLoadState: 'idle',
+    editingSubjectId: null
 };
 
 const NAV_SECTIONS = {
@@ -158,7 +179,7 @@ const NAV_SECTIONS = {
     students: { view: 'view-students', functional: true },
     teachers: { view: 'view-teachers', functional: true },
     classes: { view: 'view-classes', functional: true },
-    subjects: { view: 'view-placeholder', functional: false, label: 'المواد' },
+    subjects: { view: 'view-subjects', functional: true },
     attendance: { view: 'view-placeholder', functional: false, label: 'الحضور' },
     grades: { view: 'view-placeholder', functional: false, label: 'الدرجات' }
 };
@@ -173,6 +194,29 @@ function canManageTeachers() {
 // Classes use the identical owner/admin-only rule as teachers.
 function canManageClasses() {
     return canManageTeachers();
+}
+
+// Subjects differ from Teachers/Classes: a teacher-role user can create
+// their own subjects (staff still cannot create anything at all).
+function canCreateSubjects() {
+    return Boolean(state.user) && ['owner', 'admin', 'teacher'].includes(state.user.role);
+}
+
+// Per-subject ownership check: owner/admin manage any subject in their
+// school; a teacher may only manage a subject that is actually theirs
+// (compared against the teacher_id the server itself resolved and
+// attached to /api/auth/me's response -- never a value this page invents).
+function canManageSubject(subject) {
+    if (!state.user) return false;
+    if (state.user.role === 'owner' || state.user.role === 'admin') return true;
+    if (state.user.role === 'teacher') {
+        return state.user.teacher_id != null && subject.teacher_id === state.user.teacher_id;
+    }
+    return false;
+}
+
+function isTeacherRole() {
+    return Boolean(state.user) && state.user.role === 'teacher';
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +296,8 @@ function showAppScreen(user) {
     state.teachersLoadState = 'idle';
     state.classes = [];
     state.classesLoadState = 'idle';
+    state.subjects = [];
+    state.subjectsLoadState = 'idle';
     hideAllScreens();
     screens.app.hidden = false;
     renderUserInfo(user);
@@ -261,6 +307,8 @@ function showAppScreen(user) {
     renderTeachersList();
     closeClassForm();
     renderClassesList();
+    closeSubjectForm();
+    renderSubjectsList();
     loadStudentsData();
 }
 
@@ -350,6 +398,9 @@ function navigateTo(section) {
     }
     if (section === 'classes' && state.classesLoadState === 'idle') {
         loadClassesData();
+    }
+    if (section === 'subjects' && state.subjectsLoadState === 'idle') {
+        loadSubjectsData();
     }
 
     closeMobileSidebar();
@@ -1072,6 +1123,257 @@ classForm.addEventListener('submit', function (event) {
                     isEditing ? 'تعذر حفظ التعديلات. حاول مرة أخرى.' : 'تعذر إضافة الصف. حاول مرة أخرى.',
                     [classFormError]
                 );
+            }
+        }
+    );
+});
+
+// ---------------------------------------------------------------------------
+// Subjects (protected; a subject always belongs to exactly one teacher.
+// owner/admin choose that teacher from a dynamically loaded list -- never
+// hardcoded -- and may reassign it; a teacher-role user can never see or
+// set teacher_id at all, since the server always resolves it from their
+// own session. This frontend never reads, stores, or sends a school_id
+// anywhere here either.)
+// ---------------------------------------------------------------------------
+
+function populateSubjectTeacherSelect(selectedTeacherId) {
+    subjectTeacherSelect.innerHTML = '<option value="">اختر المعلم...</option>';
+    state.teachers.forEach(function (teacher) {
+        const option = document.createElement('option');
+        option.value = String(teacher.id);
+        option.textContent = teacher.name;
+        subjectTeacherSelect.appendChild(option);
+    });
+    subjectTeacherSelect.value = selectedTeacherId != null ? String(selectedTeacherId) : '';
+}
+
+function openSubjectForm(subject) {
+    state.editingSubjectId = subject ? subject.id : null;
+    subjectFormTitle.textContent = subject ? 'تعديل المادة' : 'إضافة مادة';
+    subjectFormSubmit.textContent = subject ? 'حفظ التعديلات' : 'حفظ';
+    subjectNameInput.value = subject ? subject.name : '';
+    subjectCodeInput.value = subject ? (subject.code || '') : '';
+    clearError(subjectFormError);
+
+    if (isTeacherRole()) {
+        // A teacher never picks the teacher -- the server always assigns
+        // the subject to their own linked record.
+        subjectTeacherField.hidden = true;
+        subjectTeacherNote.hidden = false;
+    } else {
+        subjectTeacherField.hidden = false;
+        subjectTeacherNote.hidden = true;
+        const selectedTeacherId = subject ? subject.teacher_id : null;
+        if (state.teachersLoadState === 'loaded') {
+            populateSubjectTeacherSelect(selectedTeacherId);
+        } else {
+            subjectTeacherSelect.innerHTML = '<option value="">جاري تحميل قائمة المعلمين...</option>';
+            loadTeachersData().then(function () {
+                populateSubjectTeacherSelect(selectedTeacherId);
+            });
+        }
+    }
+
+    subjectFormCard.hidden = false;
+    subjectNameInput.focus();
+}
+
+function closeSubjectForm() {
+    state.editingSubjectId = null;
+    subjectForm.reset();
+    clearError(subjectFormError);
+    subjectFormCard.hidden = true;
+}
+
+addSubjectBtn.addEventListener('click', function () {
+    openSubjectForm(null);
+});
+
+subjectFormCancel.addEventListener('click', closeSubjectForm);
+
+function getFilteredSubjects() {
+    const query = subjectSearchInput.value.trim().toLowerCase();
+    if (!query) return state.subjects;
+    return state.subjects.filter(function (subject) {
+        const name = (subject.name || '').toLowerCase();
+        const code = (subject.code || '').toLowerCase();
+        const teacherName = (subject.teacher_name || '').toLowerCase();
+        return name.indexOf(query) !== -1 || code.indexOf(query) !== -1 || teacherName.indexOf(query) !== -1;
+    });
+}
+
+function deleteSubject(subject) {
+    const confirmed = window.confirm('هل أنت متأكد من حذف المادة "' + subject.name + '"؟');
+    if (!confirmed) return;
+
+    clearError(subjectsError);
+    clearNotice(subjectsMessage);
+
+    apiFetch('/api/subjects/' + subject.id, { method: 'DELETE' })
+        .then(function () {
+            showNotice(subjectsMessage, 'تم حذف المادة بنجاح.');
+            return loadSubjectsData();
+        })
+        .catch(function (error) {
+            handleApiError(error, 'تعذر حذف المادة. حاول مرة أخرى.', [subjectsError]);
+        });
+}
+
+// Reuses the .teacher-item/.teacher-info/.teacher-actions layout classes,
+// same as Classes -- identical visual shape (name, a secondary meta line,
+// edit/delete actions).
+function buildSubjectListItem(subject) {
+    const item = document.createElement('li');
+    item.className = 'teacher-item';
+
+    const info = document.createElement('div');
+    info.className = 'teacher-info';
+
+    const name = document.createElement('span');
+    name.className = 'teacher-name';
+    name.textContent = subject.name;
+    info.appendChild(name);
+
+    const meta = document.createElement('span');
+    meta.className = 'teacher-meta';
+    meta.textContent = (subject.code ? subject.code + ' · ' : '') + subject.teacher_name;
+    info.appendChild(meta);
+
+    item.appendChild(info);
+
+    if (canManageSubject(subject)) {
+        const actions = document.createElement('div');
+        actions.className = 'teacher-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn btn-secondary btn-small';
+        editBtn.textContent = 'تعديل';
+        editBtn.addEventListener('click', function () {
+            openSubjectForm(subject);
+        });
+        actions.appendChild(editBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'btn btn-danger btn-small';
+        deleteBtn.textContent = 'حذف';
+        deleteBtn.addEventListener('click', function () {
+            deleteSubject(subject);
+        });
+        actions.appendChild(deleteBtn);
+
+        item.appendChild(actions);
+    }
+
+    return item;
+}
+
+function renderSubjectsList() {
+    addSubjectBtn.hidden = !canCreateSubjects();
+    subjectsList.innerHTML = '';
+
+    if (state.subjectsLoadState !== 'loaded') {
+        return;
+    }
+
+    const filtered = getFilteredSubjects();
+
+    if (filtered.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'teachers-empty';
+        empty.textContent = state.subjects.length === 0
+            ? 'لا توجد مواد دراسية حتى الآن.'
+            : 'لا توجد نتائج مطابقة للبحث.';
+        subjectsList.appendChild(empty);
+        return;
+    }
+
+    filtered.forEach(function (subject) {
+        subjectsList.appendChild(buildSubjectListItem(subject));
+    });
+}
+
+async function loadSubjectsData() {
+    state.subjectsLoadState = 'loading';
+    subjectsLoading.hidden = false;
+    clearError(subjectsError);
+
+    try {
+        const data = await apiFetch('/api/subjects', { method: 'GET' });
+        state.subjects = data.subjects || [];
+        state.subjectsLoadState = 'loaded';
+    } catch (error) {
+        state.subjectsLoadState = 'error';
+        handleApiError(error, 'تعذر تحميل بيانات المواد.', [subjectsError]);
+    } finally {
+        subjectsLoading.hidden = true;
+        renderSubjectsList();
+    }
+}
+
+subjectSearchInput.addEventListener('input', renderSubjectsList);
+
+// Maps the backend's (English) error strings to specific Arabic messages
+// where a more precise one is worth showing; falls back to defaultMessage
+// otherwise -- mirrors the same pattern used for registration errors.
+function translateSubjectError(error, defaultMessage) {
+    const raw = error.serverMessage || '';
+    if (raw.indexOf('already in use') !== -1) {
+        return 'اسم المادة مستخدم بالفعل في هذه المدرسة.';
+    }
+    if (raw.indexOf('No teacher record is linked') !== -1) {
+        return 'لا يوجد سجل معلم مرتبط بحسابك. يرجى التواصل مع إدارة المدرسة.';
+    }
+    if (raw.indexOf('teacher_id is required') !== -1 || raw.indexOf('Teacher not found') !== -1) {
+        return 'يرجى اختيار معلم صالح من نفس المدرسة.';
+    }
+    return defaultMessage;
+}
+
+subjectForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    clearError(subjectFormError);
+
+    const name = subjectNameInput.value.trim();
+    const code = subjectCodeInput.value.trim();
+
+    if (!name) {
+        showError(subjectFormError, 'يرجى إدخال اسم المادة.');
+        return;
+    }
+
+    const payload = { name, code };
+    if (!isTeacherRole()) {
+        const teacherId = subjectTeacherSelect.value;
+        if (!teacherId) {
+            showError(subjectFormError, 'يرجى اختيار المعلم المسؤول عن هذه المادة.');
+            return;
+        }
+        payload.teacher_id = Number(teacherId);
+    }
+
+    const isEditing = state.editingSubjectId !== null;
+    const url = isEditing ? '/api/subjects/' + state.editingSubjectId : '/api/subjects';
+    const method = isEditing ? 'PATCH' : 'POST';
+
+    withLoading(
+        subjectFormSubmit,
+        isEditing ? 'جاري حفظ التعديلات...' : 'جاري إضافة المادة...',
+        async function () {
+            try {
+                await apiFetch(url, {
+                    method: method,
+                    body: JSON.stringify(payload)
+                });
+                clearError(subjectsError);
+                showNotice(subjectsMessage, isEditing ? 'تم تحديث بيانات المادة بنجاح.' : 'تمت إضافة المادة بنجاح.');
+                closeSubjectForm();
+                await loadSubjectsData();
+            } catch (error) {
+                const defaultMessage = isEditing ? 'تعذر حفظ التعديلات. حاول مرة أخرى.' : 'تعذر إضافة المادة. حاول مرة أخرى.';
+                handleApiError(error, translateSubjectError(error, defaultMessage), [subjectFormError]);
             }
         }
     );

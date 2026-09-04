@@ -80,6 +80,14 @@ CREATE TABLE classes (
 CREATE TABLE subjects (
     id SERIAL PRIMARY KEY,
     school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    -- One teacher can have many subjects, but every subject belongs to
+    -- exactly one teacher (one-to-many, no junction table). NOT NULL with
+    -- no ON DELETE SET NULL is deliberate: a subject without a teacher
+    -- would violate that invariant, so deleting a teacher cascades to
+    -- their subjects too -- consistent with this schema's existing
+    -- convention of cascading deletes downward through ownership (see
+    -- file header).
+    teacher_id INTEGER NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     code TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -125,6 +133,7 @@ CREATE INDEX idx_students_school_id ON students (school_id);
 CREATE INDEX idx_teachers_school_id ON teachers (school_id);
 CREATE INDEX idx_classes_school_id ON classes (school_id);
 CREATE INDEX idx_subjects_school_id ON subjects (school_id);
+CREATE INDEX idx_subjects_teacher_id ON subjects (teacher_id);
 CREATE INDEX idx_enrollments_school_id ON enrollments (school_id);
 CREATE INDEX idx_grades_school_id ON grades (school_id);
 CREATE INDEX idx_attendance_school_id ON attendance (school_id);

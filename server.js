@@ -203,10 +203,12 @@ async function authenticateRequest(req) {
 
     const tokenHash = sha256Hex(token);
     const result = await pool.query(
-        `SELECT users.id, users.school_id, users.name, users.email, users.role, schools.name AS school_name
+        `SELECT users.id, users.school_id, users.name, users.email, users.role, schools.name AS school_name,
+                teachers.id AS linked_teacher_id
          FROM sessions
          JOIN users ON users.id = sessions.user_id
          JOIN schools ON schools.id = users.school_id
+         LEFT JOIN teachers ON teachers.user_id = users.id AND teachers.school_id = users.school_id
          WHERE sessions.token_hash = $1 AND sessions.expires_at > now()`,
         [tokenHash]
     );
@@ -221,6 +223,7 @@ async function authenticateRequest(req) {
         name: row.name,
         email: row.email,
         role: row.role,
+        teacherId: row.linked_teacher_id,
         tokenHash
     };
 }
@@ -260,7 +263,12 @@ function safeUser(row) {
         email: row.email,
         role: row.role,
         school_id: row.school_id,
-        school_name: row.school_name
+        school_name: row.school_name,
+        // Only present for a 'teacher'-role user with a linked teachers
+        // row; used by the frontend to decide which subjects show
+        // edit/delete controls for them. The API remains the real
+        // authority regardless of what this value is.
+        teacher_id: row.linked_teacher_id != null ? row.linked_teacher_id : null
     };
 }
 
@@ -364,9 +372,11 @@ async function handleLogin(req, res) {
     try {
         const result = await pool.query(
             `SELECT users.id, users.school_id, users.name, users.email, users.role,
-                    users.password_hash, schools.name AS school_name
+                    users.password_hash, schools.name AS school_name,
+                    teachers.id AS linked_teacher_id
              FROM users
              JOIN schools ON schools.id = users.school_id
+             LEFT JOIN teachers ON teachers.user_id = users.id AND teachers.school_id = users.school_id
              WHERE users.email = $1`,
             [email]
         );
@@ -707,6 +717,241 @@ async function handleDeleteClass(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Subject handlers (tenant-scoped via req.user.school_id, plus a second
+// layer of ownership scoping unique to this module: a subject always
+// belongs to exactly one teacher (subjects.teacher_id, NOT NULL, one
+// teacher -> many subjects, never the reverse). owner/admin can manage any
+// subject in their school and may assign/reassign teacher_id, but only to
+// a teacher verified to belong to that same school. A 'teacher'-role user
+// can only create/update/delete subjects owned by their OWN linked teacher
+// record (req.user.teacherId, resolved server-side from the session -- a
+// client-supplied teacher_id is never trusted for this) and can never set
+// or change teacher_id at all. Listing requires only authentication,
+// matching every other module (staff included, read-only).
+// ---------------------------------------------------------------------------
+
+function readSubjectFields(data) {
+    return {
+        name: typeof data.name === 'string' ? data.name.trim() : '',
+        code: typeof data.code === 'string' ? data.code.trim() : ''
+    };
+}
+
+// Looks up one teacher by id, scoped to a school -- used both to validate
+// an owner/admin-supplied teacher_id and to fetch a subject's teacher name.
+async function findTeacherInSchool(teacherId, schoolId) {
+    const result = await pool.query(
+        'SELECT id, name FROM teachers WHERE id = $1 AND school_id = $2',
+        [teacherId, schoolId]
+    );
+    return result.rows[0] || null;
+}
+
+async function attachTeacherName(subjectRow, schoolId) {
+    const teacher = await findTeacherInSchool(subjectRow.teacher_id, schoolId);
+    return { ...subjectRow, teacher_name: teacher ? teacher.name : null };
+}
+
+function parseTeacherId(rawValue) {
+    const teacherId = Number(rawValue);
+    return rawValue && Number.isInteger(teacherId) && teacherId > 0 ? teacherId : null;
+}
+
+async function handleListSubjects(req, res) {
+    try {
+        const result = await pool.query(
+            `SELECT subjects.id, subjects.school_id, subjects.teacher_id, subjects.name, subjects.code,
+                    subjects.created_at, teachers.name AS teacher_name
+             FROM subjects
+             JOIN teachers ON teachers.id = subjects.teacher_id
+             WHERE subjects.school_id = $1
+             ORDER BY subjects.created_at DESC, subjects.id DESC`,
+            [req.user.school_id]
+        );
+        sendJson(res, 200, { success: true, subjects: result.rows });
+    } catch (error) {
+        console.error('Database error while listing subjects:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to fetch subjects' });
+    }
+}
+
+async function handleCreateSubject(req, res) {
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const { name, code } = readSubjectFields(data);
+    if (!name) {
+        sendJson(res, 400, { success: false, error: 'Subject name is required' });
+        return;
+    }
+
+    let teacherId;
+    if (req.user.role === 'teacher') {
+        // Ownership always comes from the authenticated user's own linked
+        // teacher record -- any client-supplied teacher_id is ignored, not
+        // merely overridden after the fact.
+        if (!req.user.teacherId) {
+            sendJson(res, 400, { success: false, error: 'No teacher record is linked to this account' });
+            return;
+        }
+        teacherId = req.user.teacherId;
+    } else {
+        const requestedTeacherId = parseTeacherId(data.teacher_id);
+        if (!requestedTeacherId) {
+            sendJson(res, 400, { success: false, error: 'teacher_id is required' });
+            return;
+        }
+        const teacher = await findTeacherInSchool(requestedTeacherId, req.user.school_id);
+        if (!teacher) {
+            sendJson(res, 400, { success: false, error: 'Teacher not found in this school' });
+            return;
+        }
+        teacherId = teacher.id;
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO subjects (school_id, teacher_id, name, code)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, school_id, teacher_id, name, code, created_at`,
+            [req.user.school_id, teacherId, name, code || null]
+        );
+        sendJson(res, 201, { success: true, subject: await attachTeacherName(result.rows[0], req.user.school_id) });
+    } catch (error) {
+        if (error.code === '23505') {
+            sendJson(res, 400, { success: false, error: 'Subject name is already in use in this school' });
+            return;
+        }
+        console.error('Database error while creating subject:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to create subject' });
+    }
+}
+
+async function handleUpdateSubject(req, res) {
+    const id = req.params.id;
+
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const { name, code } = readSubjectFields(data);
+    if (!name) {
+        sendJson(res, 400, { success: false, error: 'Subject name is required' });
+        return;
+    }
+
+    try {
+        if (req.user.role === 'teacher') {
+            if (!req.user.teacherId) {
+                sendJson(res, 400, { success: false, error: 'No teacher record is linked to this account' });
+                return;
+            }
+            // teacher_id is deliberately absent from this query entirely --
+            // a teacher can never reassign ownership, only edit name/code,
+            // and only for a subject that is already theirs
+            // (teacher_id = $5 in the WHERE clause, not the SET list).
+            const result = await pool.query(
+                `UPDATE subjects
+                 SET name = $1, code = $2
+                 WHERE id = $3 AND school_id = $4 AND teacher_id = $5
+                 RETURNING id, school_id, teacher_id, name, code, created_at`,
+                [name, code || null, id, req.user.school_id, req.user.teacherId]
+            );
+            if (result.rows.length === 0) {
+                sendJson(res, 404, { success: false, error: 'Subject not found' });
+                return;
+            }
+            sendJson(res, 200, { success: true, subject: await attachTeacherName(result.rows[0], req.user.school_id) });
+            return;
+        }
+
+        // owner/admin: may also reassign teacher_id, validated against the
+        // same school; omitting it leaves the subject's current teacher.
+        let result;
+        if (data.teacher_id !== undefined && data.teacher_id !== null && data.teacher_id !== '') {
+            const requestedTeacherId = parseTeacherId(data.teacher_id);
+            if (!requestedTeacherId) {
+                sendJson(res, 400, { success: false, error: 'teacher_id is required' });
+                return;
+            }
+            const teacher = await findTeacherInSchool(requestedTeacherId, req.user.school_id);
+            if (!teacher) {
+                sendJson(res, 400, { success: false, error: 'Teacher not found in this school' });
+                return;
+            }
+            result = await pool.query(
+                `UPDATE subjects
+                 SET name = $1, code = $2, teacher_id = $3
+                 WHERE id = $4 AND school_id = $5
+                 RETURNING id, school_id, teacher_id, name, code, created_at`,
+                [name, code || null, teacher.id, id, req.user.school_id]
+            );
+        } else {
+            result = await pool.query(
+                `UPDATE subjects
+                 SET name = $1, code = $2
+                 WHERE id = $3 AND school_id = $4
+                 RETURNING id, school_id, teacher_id, name, code, created_at`,
+                [name, code || null, id, req.user.school_id]
+            );
+        }
+
+        if (result.rows.length === 0) {
+            sendJson(res, 404, { success: false, error: 'Subject not found' });
+            return;
+        }
+        sendJson(res, 200, { success: true, subject: await attachTeacherName(result.rows[0], req.user.school_id) });
+    } catch (error) {
+        if (error.code === '23505') {
+            sendJson(res, 400, { success: false, error: 'Subject name is already in use in this school' });
+            return;
+        }
+        console.error('Database error while updating subject:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to update subject' });
+    }
+}
+
+async function handleDeleteSubject(req, res) {
+    const id = req.params.id;
+
+    try {
+        let result;
+        if (req.user.role === 'teacher') {
+            if (!req.user.teacherId) {
+                sendJson(res, 400, { success: false, error: 'No teacher record is linked to this account' });
+                return;
+            }
+            result = await pool.query(
+                'DELETE FROM subjects WHERE id = $1 AND school_id = $2 AND teacher_id = $3 RETURNING id',
+                [id, req.user.school_id, req.user.teacherId]
+            );
+        } else {
+            result = await pool.query(
+                'DELETE FROM subjects WHERE id = $1 AND school_id = $2 RETURNING id',
+                [id, req.user.school_id]
+            );
+        }
+        if (result.rows.length === 0) {
+            sendJson(res, 404, { success: false, error: 'Subject not found' });
+            return;
+        }
+        sendJson(res, 200, { success: true, message: 'Subject deleted successfully' });
+    } catch (error) {
+        console.error('Database error while deleting subject:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to delete subject' });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -720,7 +965,13 @@ const routes = {
     'GET /api/teachers': requireAuth(handleListTeachers),
     'POST /api/teachers': requireRole('owner', 'admin')(handleCreateTeacher),
     'GET /api/classes': requireAuth(handleListClasses),
-    'POST /api/classes': requireRole('owner', 'admin')(handleCreateClass)
+    'POST /api/classes': requireRole('owner', 'admin')(handleCreateClass),
+    'GET /api/subjects': requireAuth(handleListSubjects),
+    // Staff is excluded here; owner/admin/teacher all reach the handler,
+    // which then enforces the finer-grained ownership rule itself (a
+    // teacher may only affect their own subjects) -- requireRole alone
+    // can't express that, only the coarse role gate.
+    'POST /api/subjects': requireRole('owner', 'admin', 'teacher')(handleCreateSubject)
 };
 
 // Routes needing a URL parameter (currently /api/teachers/:id and
@@ -736,6 +987,11 @@ const ID_ROUTES = [
         pattern: /^\/api\/classes\/(\d+)$/,
         PATCH: requireRole('owner', 'admin')(handleUpdateClass),
         DELETE: requireRole('owner', 'admin')(handleDeleteClass)
+    },
+    {
+        pattern: /^\/api\/subjects\/(\d+)$/,
+        PATCH: requireRole('owner', 'admin', 'teacher')(handleUpdateSubject),
+        DELETE: requireRole('owner', 'admin', 'teacher')(handleDeleteSubject)
     }
 ];
 
