@@ -112,6 +112,22 @@ const teachersMessage = document.getElementById('teachersMessage');
 const teachersLoading = document.getElementById('teachersLoading');
 const teachersList = document.getElementById('teachersList');
 
+const addClassBtn = document.getElementById('addClassBtn');
+const classFormCard = document.getElementById('classFormCard');
+const classFormTitle = document.getElementById('classFormTitle');
+const classForm = document.getElementById('classForm');
+const classNameInput = document.getElementById('className');
+const classGradeLevelInput = document.getElementById('classGradeLevel');
+const classAcademicYearInput = document.getElementById('classAcademicYear');
+const classFormError = document.getElementById('classFormError');
+const classFormSubmit = document.getElementById('classFormSubmit');
+const classFormCancel = document.getElementById('classFormCancel');
+const classSearchInput = document.getElementById('classSearch');
+const classesError = document.getElementById('classesError');
+const classesMessage = document.getElementById('classesMessage');
+const classesLoading = document.getElementById('classesLoading');
+const classesList = document.getElementById('classesList');
+
 const addStudentForm = document.getElementById('addStudentForm');
 const studentNameInput = document.getElementById('studentName');
 const addStudentSubmit = document.getElementById('addStudentSubmit');
@@ -131,14 +147,17 @@ const state = {
     studentsLoadState: 'idle', // 'idle' | 'loading' | 'loaded' | 'error'
     teachers: [],
     teachersLoadState: 'idle',
-    editingTeacherId: null // null while adding; a teacher id while editing
+    editingTeacherId: null, // null while adding; a teacher id while editing
+    classes: [],
+    classesLoadState: 'idle',
+    editingClassId: null
 };
 
 const NAV_SECTIONS = {
     dashboard: { view: 'view-dashboard', functional: true },
     students: { view: 'view-students', functional: true },
     teachers: { view: 'view-teachers', functional: true },
-    classes: { view: 'view-placeholder', functional: false, label: 'الصفوف' },
+    classes: { view: 'view-classes', functional: true },
     subjects: { view: 'view-placeholder', functional: false, label: 'المواد' },
     attendance: { view: 'view-placeholder', functional: false, label: 'الحضور' },
     grades: { view: 'view-placeholder', functional: false, label: 'الدرجات' }
@@ -149,6 +168,11 @@ const NAV_SECTIONS = {
 // the add/edit/delete controls, it is not the actual authorization).
 function canManageTeachers() {
     return Boolean(state.user) && (state.user.role === 'owner' || state.user.role === 'admin');
+}
+
+// Classes use the identical owner/admin-only rule as teachers.
+function canManageClasses() {
+    return canManageTeachers();
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +250,8 @@ function showAppScreen(user) {
     state.studentsLoadState = 'idle';
     state.teachers = [];
     state.teachersLoadState = 'idle';
+    state.classes = [];
+    state.classesLoadState = 'idle';
     hideAllScreens();
     screens.app.hidden = false;
     renderUserInfo(user);
@@ -233,6 +259,8 @@ function showAppScreen(user) {
     renderStudentDependentUI();
     closeTeacherForm();
     renderTeachersList();
+    closeClassForm();
+    renderClassesList();
     loadStudentsData();
 }
 
@@ -319,6 +347,9 @@ function navigateTo(section) {
     }
     if (section === 'teachers' && state.teachersLoadState === 'idle') {
         loadTeachersData();
+    }
+    if (section === 'classes' && state.classesLoadState === 'idle') {
+        loadClassesData();
     }
 
     closeMobileSidebar();
@@ -846,6 +877,200 @@ teacherForm.addEventListener('submit', function (event) {
                     error,
                     isEditing ? 'تعذر حفظ التعديلات. حاول مرة أخرى.' : 'تعذر إضافة المعلم. حاول مرة أخرى.',
                     [teacherFormError]
+                );
+            }
+        }
+    );
+});
+
+// ---------------------------------------------------------------------------
+// Classes (protected; create/update/delete additionally require
+// owner/admin server-side via requireRole -- this frontend never reads,
+// stores, or sends a school_id anywhere here either)
+// ---------------------------------------------------------------------------
+
+function openClassForm(classItem) {
+    state.editingClassId = classItem ? classItem.id : null;
+    classFormTitle.textContent = classItem ? 'تعديل الصف' : 'إضافة صف';
+    classFormSubmit.textContent = classItem ? 'حفظ التعديلات' : 'حفظ';
+    classNameInput.value = classItem ? classItem.name : '';
+    classGradeLevelInput.value = classItem ? classItem.grade_level : '';
+    classAcademicYearInput.value = classItem ? classItem.academic_year : '';
+    clearError(classFormError);
+    classFormCard.hidden = false;
+    classNameInput.focus();
+}
+
+function closeClassForm() {
+    state.editingClassId = null;
+    classForm.reset();
+    clearError(classFormError);
+    classFormCard.hidden = true;
+}
+
+addClassBtn.addEventListener('click', function () {
+    openClassForm(null);
+});
+
+classFormCancel.addEventListener('click', closeClassForm);
+
+function getFilteredClasses() {
+    const query = classSearchInput.value.trim().toLowerCase();
+    if (!query) return state.classes;
+    return state.classes.filter(function (classItem) {
+        const name = (classItem.name || '').toLowerCase();
+        const gradeLevel = (classItem.grade_level || '').toLowerCase();
+        const academicYear = (classItem.academic_year || '').toLowerCase();
+        return name.indexOf(query) !== -1 || gradeLevel.indexOf(query) !== -1 || academicYear.indexOf(query) !== -1;
+    });
+}
+
+function deleteClass(classItem) {
+    const confirmed = window.confirm('هل أنت متأكد من حذف الصف "' + classItem.name + '"؟');
+    if (!confirmed) return;
+
+    clearError(classesError);
+    clearNotice(classesMessage);
+
+    apiFetch('/api/classes/' + classItem.id, { method: 'DELETE' })
+        .then(function () {
+            showNotice(classesMessage, 'تم حذف الصف بنجاح.');
+            return loadClassesData();
+        })
+        .catch(function (error) {
+            handleApiError(error, 'تعذر حذف الصف. حاول مرة أخرى.', [classesError]);
+        });
+}
+
+// Reuses the .teacher-item/.teacher-info/.teacher-actions layout classes --
+// same visual shape (a name, a secondary meta line, edit/delete actions).
+function buildClassListItem(classItem) {
+    const item = document.createElement('li');
+    item.className = 'teacher-item';
+
+    const info = document.createElement('div');
+    info.className = 'teacher-info';
+
+    const name = document.createElement('span');
+    name.className = 'teacher-name';
+    name.textContent = classItem.name;
+    info.appendChild(name);
+
+    const meta = document.createElement('span');
+    meta.className = 'teacher-meta';
+    meta.textContent = classItem.grade_level + ' · ' + classItem.academic_year;
+    info.appendChild(meta);
+
+    item.appendChild(info);
+
+    if (canManageClasses()) {
+        const actions = document.createElement('div');
+        actions.className = 'teacher-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn btn-secondary btn-small';
+        editBtn.textContent = 'تعديل';
+        editBtn.addEventListener('click', function () {
+            openClassForm(classItem);
+        });
+        actions.appendChild(editBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'btn btn-danger btn-small';
+        deleteBtn.textContent = 'حذف';
+        deleteBtn.addEventListener('click', function () {
+            deleteClass(classItem);
+        });
+        actions.appendChild(deleteBtn);
+
+        item.appendChild(actions);
+    }
+
+    return item;
+}
+
+function renderClassesList() {
+    addClassBtn.hidden = !canManageClasses();
+    classesList.innerHTML = '';
+
+    if (state.classesLoadState !== 'loaded') {
+        return;
+    }
+
+    const filtered = getFilteredClasses();
+
+    if (filtered.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'teachers-empty';
+        empty.textContent = state.classes.length === 0
+            ? 'لا توجد صفوف دراسية حتى الآن.'
+            : 'لا توجد نتائج مطابقة للبحث.';
+        classesList.appendChild(empty);
+        return;
+    }
+
+    filtered.forEach(function (classItem) {
+        classesList.appendChild(buildClassListItem(classItem));
+    });
+}
+
+async function loadClassesData() {
+    state.classesLoadState = 'loading';
+    classesLoading.hidden = false;
+    clearError(classesError);
+
+    try {
+        const data = await apiFetch('/api/classes', { method: 'GET' });
+        state.classes = data.classes || [];
+        state.classesLoadState = 'loaded';
+    } catch (error) {
+        state.classesLoadState = 'error';
+        handleApiError(error, 'تعذر تحميل بيانات الصفوف.', [classesError]);
+    } finally {
+        classesLoading.hidden = true;
+        renderClassesList();
+    }
+}
+
+classSearchInput.addEventListener('input', renderClassesList);
+
+classForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    clearError(classFormError);
+
+    const name = classNameInput.value.trim();
+    const gradeLevel = classGradeLevelInput.value.trim();
+    const academicYear = classAcademicYearInput.value.trim();
+
+    if (!name || !gradeLevel || !academicYear) {
+        showError(classFormError, 'يرجى تعبئة جميع الحقول المطلوبة: اسم الصف والمرحلة والسنة الدراسية.');
+        return;
+    }
+
+    const isEditing = state.editingClassId !== null;
+    const url = isEditing ? '/api/classes/' + state.editingClassId : '/api/classes';
+    const method = isEditing ? 'PATCH' : 'POST';
+
+    withLoading(
+        classFormSubmit,
+        isEditing ? 'جاري حفظ التعديلات...' : 'جاري إضافة الصف...',
+        async function () {
+            try {
+                await apiFetch(url, {
+                    method: method,
+                    body: JSON.stringify({ name, grade_level: gradeLevel, academic_year: academicYear })
+                });
+                clearError(classesError);
+                showNotice(classesMessage, isEditing ? 'تم تحديث بيانات الصف بنجاح.' : 'تمت إضافة الصف بنجاح.');
+                closeClassForm();
+                await loadClassesData();
+            } catch (error) {
+                handleApiError(
+                    error,
+                    isEditing ? 'تعذر حفظ التعديلات. حاول مرة أخرى.' : 'تعذر إضافة الصف. حاول مرة أخرى.',
+                    [classFormError]
                 );
             }
         }

@@ -586,6 +586,127 @@ async function handleDeleteTeacher(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Class handlers (tenant-scoped via req.user.school_id, same rules as
+// teachers: the client never supplies school_id; create/update/delete are
+// owner/admin only via requireRole; listing only requires being
+// authenticated. The existing classes table/columns are used as-is.)
+// ---------------------------------------------------------------------------
+
+function readClassFields(data) {
+    return {
+        name: typeof data.name === 'string' ? data.name.trim() : '',
+        gradeLevel: typeof data.grade_level === 'string' ? data.grade_level.trim() : '',
+        academicYear: typeof data.academic_year === 'string' ? data.academic_year.trim() : ''
+    };
+}
+
+async function handleListClasses(req, res) {
+    try {
+        const result = await pool.query(
+            `SELECT id, school_id, name, grade_level, academic_year, created_at
+             FROM classes
+             WHERE school_id = $1
+             ORDER BY created_at DESC, id DESC`,
+            [req.user.school_id]
+        );
+        sendJson(res, 200, { success: true, classes: result.rows });
+    } catch (error) {
+        console.error('Database error while listing classes:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to fetch classes' });
+    }
+}
+
+async function handleCreateClass(req, res) {
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const { name, gradeLevel, academicYear } = readClassFields(data);
+    if (!name || !gradeLevel || !academicYear) {
+        sendJson(res, 400, { success: false, error: 'Name, grade level, and academic year are all required' });
+        return;
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO classes (school_id, name, grade_level, academic_year)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, school_id, name, grade_level, academic_year, created_at`,
+            [req.user.school_id, name, gradeLevel, academicYear]
+        );
+        sendJson(res, 201, { success: true, class: result.rows[0] });
+    } catch (error) {
+        console.error('Database error while creating class:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to create class' });
+    }
+}
+
+async function handleUpdateClass(req, res) {
+    const id = req.params.id;
+
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const { name, gradeLevel, academicYear } = readClassFields(data);
+    if (!name || !gradeLevel || !academicYear) {
+        sendJson(res, 400, { success: false, error: 'Name, grade level, and academic year are all required' });
+        return;
+    }
+
+    try {
+        // school_id in the WHERE clause is what makes a cross-tenant update
+        // impossible: a class belonging to another school matches zero rows.
+        const result = await pool.query(
+            `UPDATE classes
+             SET name = $1, grade_level = $2, academic_year = $3
+             WHERE id = $4 AND school_id = $5
+             RETURNING id, school_id, name, grade_level, academic_year, created_at`,
+            [name, gradeLevel, academicYear, id, req.user.school_id]
+        );
+        if (result.rows.length === 0) {
+            sendJson(res, 404, { success: false, error: 'Class not found' });
+            return;
+        }
+        sendJson(res, 200, { success: true, class: result.rows[0] });
+    } catch (error) {
+        console.error('Database error while updating class:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to update class' });
+    }
+}
+
+async function handleDeleteClass(req, res) {
+    const id = req.params.id;
+
+    try {
+        // Same tenant-scoping rule as update. Any enrollments referencing
+        // this class are removed by the database's own
+        // ON DELETE CASCADE (enrollments.class_id) -- no application code
+        // needed for that, and enrollment management is out of scope here.
+        const result = await pool.query(
+            'DELETE FROM classes WHERE id = $1 AND school_id = $2 RETURNING id',
+            [id, req.user.school_id]
+        );
+        if (result.rows.length === 0) {
+            sendJson(res, 404, { success: false, error: 'Class not found' });
+            return;
+        }
+        sendJson(res, 200, { success: true, message: 'Class deleted successfully' });
+    } catch (error) {
+        console.error('Database error while deleting class:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to delete class' });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -597,15 +718,26 @@ const routes = {
     'GET /api/students': requireAuth(handleListStudents),
     'POST /api/students': requireAuth(handleCreateStudent),
     'GET /api/teachers': requireAuth(handleListTeachers),
-    'POST /api/teachers': requireRole('owner', 'admin')(handleCreateTeacher)
+    'POST /api/teachers': requireRole('owner', 'admin')(handleCreateTeacher),
+    'GET /api/classes': requireAuth(handleListClasses),
+    'POST /api/classes': requireRole('owner', 'admin')(handleCreateClass)
 };
 
-// /api/teachers/:id (PATCH, DELETE) is the only route needing a URL
-// parameter, so it gets one small dedicated regex match rather than a
-// general path-matching system built for a single case.
-const TEACHER_ID_ROUTE = /^\/api\/teachers\/(\d+)$/;
-const updateTeacherHandler = requireRole('owner', 'admin')(handleUpdateTeacher);
-const deleteTeacherHandler = requireRole('owner', 'admin')(handleDeleteTeacher);
+// Routes needing a URL parameter (currently /api/teachers/:id and
+// /api/classes/:id for PATCH/DELETE) get one small table of dedicated
+// regex matches rather than a general path-matching system.
+const ID_ROUTES = [
+    {
+        pattern: /^\/api\/teachers\/(\d+)$/,
+        PATCH: requireRole('owner', 'admin')(handleUpdateTeacher),
+        DELETE: requireRole('owner', 'admin')(handleDeleteTeacher)
+    },
+    {
+        pattern: /^\/api\/classes\/(\d+)$/,
+        PATCH: requireRole('owner', 'admin')(handleUpdateClass),
+        DELETE: requireRole('owner', 'admin')(handleDeleteClass)
+    }
+];
 
 const server = http.createServer((req, res) => {
     if (req.method === 'GET' && STATIC_FILES[req.url]) {
@@ -616,10 +748,14 @@ const server = http.createServer((req, res) => {
     let handler = routes[`${req.method} ${req.url}`];
 
     if (!handler) {
-        const teacherIdMatch = TEACHER_ID_ROUTE.exec(req.url);
-        if (teacherIdMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
-            req.params = { id: teacherIdMatch[1] };
-            handler = req.method === 'PATCH' ? updateTeacherHandler : deleteTeacherHandler;
+        for (const route of ID_ROUTES) {
+            const match = route.pattern.exec(req.url);
+            const idHandler = match && route[req.method];
+            if (idHandler) {
+                req.params = { id: match[1] };
+                handler = idHandler;
+                break;
+            }
         }
     }
 

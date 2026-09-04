@@ -340,3 +340,62 @@ School B/Teacher B) confirming School A can neither read, update
 real dashboard UI; and a full Phase 1–4 regression (register, login,
 student creation, dashboard count, session refresh, logout) alongside
 the new module.
+
+## Phase 6 — Classes Management
+
+`الصفوف` is now a real CRUD module, structured identically to
+[Phase 5's Teachers module](#phase-5--teachers-management) — same
+`requireAuth`/`requireRole` reuse, same tenant-scoping pattern, same UI
+conventions (the class list even reuses the Teachers module's
+`.teacher-item`/`.teacher-info`/`.teacher-actions` CSS classes, since the
+shape — name, a secondary meta line, edit/delete actions — is identical,
+so no new CSS was needed). No schema changes: the existing `classes`
+table (`id`, `school_id`, `name`, `grade_level`, `academic_year`,
+`created_at`) is used exactly as-is.
+
+**API** (all tenant-scoped by `req.user.school_id`):
+
+- `GET /api/classes` — any authenticated role; returns the school's
+  classes, ordered `created_at DESC, id DESC` (newest first).
+- `POST /api/classes` — **owner/admin only**; requires non-empty `name`,
+  `grade_level`, and `academic_year`.
+- `PATCH /api/classes/:id` — **owner/admin only**; same three fields
+  required; `WHERE id = $1 AND school_id = $2` makes a class belonging to
+  another school resolve to `404`, identically to the Teachers module.
+- `DELETE /api/classes/:id` — **owner/admin only**; same tenant-scoped
+  `WHERE` clause. Deleting a class cascades to its `enrollments` rows via
+  the existing `ON DELETE CASCADE` on `enrollments.class_id` — no
+  application code needed for that, and enrollment management itself is
+  out of scope for this phase.
+
+`teacher`/`staff` can read but get `403` from `POST`/`PATCH`/`DELETE`,
+same rule as teachers. The two-entry `ID_ROUTES` table in `server.js`
+(added this phase) replaces what was a single hard-coded
+`/api/teachers/:id` regex, so `/api/teachers/:id` and `/api/classes/:id`
+share one small dispatch loop instead of duplicating the same
+match-and-dispatch logic per resource.
+
+**Frontend** — same add/edit-toggle form pattern as Teachers (`+ إضافة
+صف`, `إضافة صف` vs `تعديل الصف`, `حفظ`/`إلغاء`), a native `confirm()`
+before delete naming the class, and a client-side search over
+name/grade level/academic year. Add/edit/delete controls are hidden in
+the UI for `teacher`/`staff` (a UX layer only — the API is the real
+enforcement); those roles still see the read-only list.
+
+Tested with real Chromium via Playwright (39 assertions) plus curl for
+role accounts other than `owner`: unauthenticated `401` on `GET`/`POST`;
+all four roles get `200` on read; owner/admin get `201`/`200` on
+create/update/delete while `teacher`/`staff` get `403`; missing or
+whitespace-only `name`/`grade_level`/`academic_year` all rejected `400`
+on the backend; a SQL-injection-shaped name stored as inert text;
+newest-first ordering confirmed; full create → search → edit → delete
+lifecycle through the real UI including confirm-dialog-cancel-doesn't-
+delete; no horizontal overflow at 375/768/1024px; role-based UI hiding
+for `teacher` (read-only) vs `admin` (full access); and the mandatory
+two-school regression — School A/Class A and School B/Class B — verified
+in **both directions** at the API level (School A gets `404` trying to
+update or delete School B's class and vice versa) and through the real
+UI (each owner sees only their own school's classes). A full Phase 1–5
+regression (registration, login, student creation, teacher creation,
+dashboard count, session refresh, mobile drawer, logout) passed
+alongside the new module.

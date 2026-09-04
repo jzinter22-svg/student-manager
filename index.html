@@ -229,7 +229,61 @@
                         </div>
                     </section>
 
-                    <!-- View: Placeholder modules (classes, subjects, attendance, grades) -->
+                    <!-- View: Classes -->
+                    <section id="view-classes" class="view" hidden>
+                        <div class="card">
+                            <div class="section-header">
+                                <div>
+                                    <h3>إدارة الصفوف</h3>
+                                    <p class="section-subtitle">إدارة صفوف المدرسة ومستوياتها الدراسية</p>
+                                </div>
+                                <button type="button" class="btn btn-add" id="addClassBtn" hidden>+ إضافة صف</button>
+                            </div>
+                        </div>
+
+                        <div class="card" id="classFormCard" hidden>
+                            <h3 id="classFormTitle">إضافة صف</h3>
+                            <form id="classForm" novalidate>
+                                <div class="field">
+                                    <label for="className">اسم الصف *</label>
+                                    <input type="text" id="className" autocomplete="off" required>
+                                </div>
+                                <div class="field">
+                                    <label for="classGradeLevel">المرحلة / المستوى الدراسي *</label>
+                                    <input type="text" id="classGradeLevel" autocomplete="off" required>
+                                </div>
+                                <div class="field">
+                                    <label for="classAcademicYear">السنة الدراسية *</label>
+                                    <input type="text" id="classAcademicYear" autocomplete="off" required>
+                                </div>
+
+                                <div id="classFormError" class="error-message" role="alert" aria-live="polite"></div>
+
+                                <div class="form-actions">
+                                    <button type="submit" class="btn" id="classFormSubmit">حفظ</button>
+                                    <button type="button" class="btn btn-secondary" id="classFormCancel">إلغاء</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <div class="card">
+                            <div class="students-list-header">
+                                <h3>قائمة الصفوف</h3>
+                                <div class="field search-field">
+                                    <label for="classSearch">البحث عن صف</label>
+                                    <input type="search" id="classSearch" autocomplete="off" placeholder="اكتب اسم الصف أو المرحلة أو السنة الدراسية...">
+                                </div>
+                            </div>
+
+                            <div id="classesError" class="error-message" role="alert" aria-live="polite"></div>
+                            <div id="classesMessage" class="notice" role="status" aria-live="polite"></div>
+                            <p id="classesLoading" class="init-loading" hidden>جاري تحميل البيانات...</p>
+
+                            <ul id="classesList" class="teachers-list" aria-live="polite"></ul>
+                        </div>
+                    </section>
+
+                    <!-- View: Placeholder modules (subjects, attendance, grades) -->
                     <section id="view-placeholder" class="view" hidden>
                         <div class="card">
                             <h3 id="placeholderTitle"></h3>
