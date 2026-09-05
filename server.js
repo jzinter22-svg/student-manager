@@ -952,6 +952,289 @@ async function handleDeleteSubject(req, res) {
 }
 
 // ---------------------------------------------------------------------------
+// Enrollment handlers (tenant-scoped via req.user.school_id). Read is
+// available to every authenticated role (owner/admin/teacher/staff);
+// create/transfer/end are owner/admin only via requireRole. academic_year
+// is never accepted from the client -- it is always read from the
+// selected class row, and the one-active-enrollment-per-year rule is
+// enforced both here (a pre-check, for a clean error message) and by the
+// database's partial unique index (idx_enrollments_one_active_per_year),
+// which is what actually protects against a race between two concurrent
+// requests.
+// ---------------------------------------------------------------------------
+
+function parsePositiveId(rawValue) {
+    const id = Number(rawValue);
+    return rawValue !== undefined && rawValue !== null && rawValue !== '' && Number.isInteger(id) && id > 0
+        ? id
+        : null;
+}
+
+async function findStudentInSchool(studentId, schoolId) {
+    const result = await pool.query(
+        'SELECT id, name, student_code FROM students WHERE id = $1 AND school_id = $2',
+        [studentId, schoolId]
+    );
+    return result.rows[0] || null;
+}
+
+async function findClassInSchool(classId, schoolId) {
+    const result = await pool.query(
+        'SELECT id, name, grade_level, academic_year FROM classes WHERE id = $1 AND school_id = $2',
+        [classId, schoolId]
+    );
+    return result.rows[0] || null;
+}
+
+async function handleListEnrollments(req, res) {
+    try {
+        const result = await pool.query(
+            `SELECT enrollments.id, enrollments.student_id, students.name AS student_name,
+                    students.student_code, enrollments.class_id, classes.name AS class_name,
+                    classes.grade_level, enrollments.academic_year,
+                    enrollments.started_at, enrollments.ended_at,
+                    (enrollments.ended_at IS NULL) AS is_current
+             FROM enrollments
+             JOIN students ON students.id = enrollments.student_id
+             JOIN classes ON classes.id = enrollments.class_id
+             WHERE enrollments.school_id = $1
+             ORDER BY enrollments.started_at DESC, enrollments.id DESC`,
+            [req.user.school_id]
+        );
+        sendJson(res, 200, { success: true, enrollments: result.rows });
+    } catch (error) {
+        console.error('Database error while listing enrollments:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to fetch enrollments' });
+    }
+}
+
+async function handleCreateEnrollment(req, res) {
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const studentId = parsePositiveId(data.student_id);
+    if (!studentId) {
+        sendJson(res, 400, { success: false, error: 'student_id is required' });
+        return;
+    }
+    const classId = parsePositiveId(data.class_id);
+    if (!classId) {
+        sendJson(res, 400, { success: false, error: 'class_id is required' });
+        return;
+    }
+
+    const student = await findStudentInSchool(studentId, req.user.school_id);
+    if (!student) {
+        sendJson(res, 400, { success: false, error: 'Student not found in this school' });
+        return;
+    }
+    // academic_year always comes from the class row, never from the
+    // client -- a client-supplied academic_year in the body is simply
+    // never read.
+    const targetClass = await findClassInSchool(classId, req.user.school_id);
+    if (!targetClass) {
+        sendJson(res, 400, { success: false, error: 'Class not found in this school' });
+        return;
+    }
+
+    try {
+        const activeResult = await pool.query(
+            'SELECT id FROM enrollments WHERE student_id = $1 AND academic_year = $2 AND ended_at IS NULL',
+            [studentId, targetClass.academic_year]
+        );
+        if (activeResult.rows.length > 0) {
+            sendJson(res, 400, {
+                success: false,
+                error: 'Student already has an active enrollment for this academic year'
+            });
+            return;
+        }
+
+        const result = await pool.query(
+            `INSERT INTO enrollments (school_id, student_id, class_id, academic_year)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, student_id, class_id, academic_year, started_at, ended_at`,
+            [req.user.school_id, studentId, classId, targetClass.academic_year]
+        );
+        const enrollment = result.rows[0];
+        sendJson(res, 201, {
+            success: true,
+            enrollment: {
+                ...enrollment,
+                student_name: student.name,
+                student_code: student.student_code,
+                class_name: targetClass.name,
+                grade_level: targetClass.grade_level,
+                is_current: enrollment.ended_at === null
+            }
+        });
+    } catch (error) {
+        // The pre-check above handles the normal case; this is the
+        // database's own partial unique index catching a genuine race
+        // between two near-simultaneous requests -- never surfaced as a
+        // raw constraint-violation error.
+        if (error.code === '23505') {
+            sendJson(res, 400, {
+                success: false,
+                error: 'Student already has an active enrollment for this academic year'
+            });
+            return;
+        }
+        console.error('Database error while creating enrollment:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to create enrollment' });
+    }
+}
+
+async function handleTransferEnrollment(req, res) {
+    const enrollmentId = req.params.id;
+
+    let data;
+    try {
+        data = await parseJsonBody(req);
+    } catch (error) {
+        sendJson(res, 400, { success: false, error: 'Invalid JSON' });
+        return;
+    }
+
+    const newClassId = parsePositiveId(data.class_id);
+    if (!newClassId) {
+        sendJson(res, 400, { success: false, error: 'class_id is required' });
+        return;
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // FOR UPDATE: a second, near-simultaneous transfer/end of the same
+        // enrollment blocks here until this transaction commits, rather
+        // than both racing to read ended_at = NULL.
+        const currentResult = await client.query(
+            `SELECT id, student_id, class_id, academic_year, ended_at
+             FROM enrollments
+             WHERE id = $1 AND school_id = $2
+             FOR UPDATE`,
+            [enrollmentId, req.user.school_id]
+        );
+        const current = currentResult.rows[0];
+        if (!current) {
+            await client.query('ROLLBACK');
+            sendJson(res, 404, { success: false, error: 'Enrollment not found' });
+            return;
+        }
+        if (current.ended_at !== null) {
+            await client.query('ROLLBACK');
+            sendJson(res, 400, { success: false, error: 'Enrollment is already ended' });
+            return;
+        }
+        if (current.class_id === newClassId) {
+            await client.query('ROLLBACK');
+            sendJson(res, 400, { success: false, error: 'Cannot transfer to the same class' });
+            return;
+        }
+
+        const targetClass = await findClassInSchool(newClassId, req.user.school_id);
+        if (!targetClass) {
+            await client.query('ROLLBACK');
+            sendJson(res, 400, { success: false, error: 'Class not found in this school' });
+            return;
+        }
+        // A normal transfer moves a student within the same academic
+        // year; a target class from a different year is out of scope for
+        // this phase and is rejected rather than silently honored.
+        if (targetClass.academic_year !== current.academic_year) {
+            await client.query('ROLLBACK');
+            sendJson(res, 400, { success: false, error: 'Cannot transfer to a class in a different academic year' });
+            return;
+        }
+
+        // Order matters: end the old row first, then insert the new one,
+        // both inside this transaction -- by the time the INSERT runs,
+        // the partial unique index no longer sees the old row as active,
+        // so the new row can become the sole active one without a
+        // moment where two active rows (or zero) exist to any other
+        // reader, and without tripping the very constraint that's meant
+        // to protect this invariant.
+        await client.query('UPDATE enrollments SET ended_at = now() WHERE id = $1', [current.id]);
+
+        const insertResult = await client.query(
+            `INSERT INTO enrollments (school_id, student_id, class_id, academic_year)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, student_id, class_id, academic_year, started_at, ended_at`,
+            [req.user.school_id, current.student_id, targetClass.id, current.academic_year]
+        );
+
+        await client.query('COMMIT');
+
+        const student = await findStudentInSchool(current.student_id, req.user.school_id);
+        const newEnrollment = insertResult.rows[0];
+        sendJson(res, 200, {
+            success: true,
+            enrollment: {
+                ...newEnrollment,
+                student_name: student ? student.name : null,
+                student_code: student ? student.student_code : null,
+                class_name: targetClass.name,
+                grade_level: targetClass.grade_level,
+                is_current: true
+            }
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        if (error.code === '23505') {
+            sendJson(res, 400, {
+                success: false,
+                error: 'Student already has an active enrollment for this academic year'
+            });
+            return;
+        }
+        console.error('Database error while transferring enrollment:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to transfer student' });
+    } finally {
+        client.release();
+    }
+}
+
+async function handleEndEnrollment(req, res) {
+    const enrollmentId = req.params.id;
+
+    try {
+        const result = await pool.query(
+            `UPDATE enrollments
+             SET ended_at = now()
+             WHERE id = $1 AND school_id = $2 AND ended_at IS NULL
+             RETURNING id, student_id, class_id, academic_year, started_at, ended_at`,
+            [enrollmentId, req.user.school_id]
+        );
+        if (result.rows.length === 0) {
+            // Distinguish "doesn't exist in this tenant" (404) from
+            // "exists but already ended" (400) without an extra query
+            // leaking whether it exists in a DIFFERENT tenant -- this
+            // second lookup is itself still scoped by school_id.
+            const existsResult = await pool.query(
+                'SELECT id FROM enrollments WHERE id = $1 AND school_id = $2',
+                [enrollmentId, req.user.school_id]
+            );
+            if (existsResult.rows.length === 0) {
+                sendJson(res, 404, { success: false, error: 'Enrollment not found' });
+                return;
+            }
+            sendJson(res, 400, { success: false, error: 'Enrollment is already ended' });
+            return;
+        }
+        sendJson(res, 200, { success: true, enrollment: result.rows[0] });
+    } catch (error) {
+        console.error('Database error while ending enrollment:', error.message);
+        sendJson(res, 500, { success: false, error: 'Failed to end enrollment' });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
 
@@ -971,7 +1254,9 @@ const routes = {
     // which then enforces the finer-grained ownership rule itself (a
     // teacher may only affect their own subjects) -- requireRole alone
     // can't express that, only the coarse role gate.
-    'POST /api/subjects': requireRole('owner', 'admin', 'teacher')(handleCreateSubject)
+    'POST /api/subjects': requireRole('owner', 'admin', 'teacher')(handleCreateSubject),
+    'GET /api/enrollments': requireAuth(handleListEnrollments),
+    'POST /api/enrollments': requireRole('owner', 'admin')(handleCreateEnrollment)
 };
 
 // Routes needing a URL parameter (currently /api/teachers/:id and
@@ -992,6 +1277,17 @@ const ID_ROUTES = [
         pattern: /^\/api\/subjects\/(\d+)$/,
         PATCH: requireRole('owner', 'admin', 'teacher')(handleUpdateSubject),
         DELETE: requireRole('owner', 'admin', 'teacher')(handleDeleteSubject)
+    },
+    // These two are POST to an action sub-path rather than PATCH/DELETE on
+    // the resource itself, but the same {pattern, METHOD: handler} table
+    // and dispatch loop handle that with no changes needed below.
+    {
+        pattern: /^\/api\/enrollments\/(\d+)\/transfer$/,
+        POST: requireRole('owner', 'admin')(handleTransferEnrollment)
+    },
+    {
+        pattern: /^\/api\/enrollments\/(\d+)\/end$/,
+        POST: requireRole('owner', 'admin')(handleEndEnrollment)
     }
 ];
 

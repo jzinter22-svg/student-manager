@@ -100,9 +100,29 @@ CREATE TABLE enrollments (
     student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
     class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
     academic_year TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (student_id, class_id, academic_year)
+    -- A transfer never deletes the old row: it sets started_at/ended_at on
+    -- the row being left and inserts a fresh row (started_at = now(),
+    -- ended_at = NULL) for the new class, so full history survives.
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Enforces the core Phase 8 rule at the database level: a student may
+-- have at most one ACTIVE (ended_at IS NULL) enrollment per academic
+-- year. A partial unique index, not a plain UNIQUE constraint, because
+-- unlimited ENDED historical rows for the same (student_id,
+-- academic_year) must remain allowed -- only the single currently-active
+-- one is constrained. This replaces the old
+-- UNIQUE (student_id, class_id, academic_year): that constraint is
+-- insufficient for Phase 8's transfer model, since it would incorrectly
+-- block a legitimate transfer back into a class a student previously
+-- left within the same year (A -> B -> A), which the database would see
+-- as a repeat of an existing (student_id, class_id, academic_year) row
+-- from the first, now-ended, enrollment.
+CREATE UNIQUE INDEX idx_enrollments_one_active_per_year
+    ON enrollments (student_id, academic_year)
+    WHERE ended_at IS NULL;
 
 CREATE TABLE grades (
     id SERIAL PRIMARY KEY,
@@ -135,5 +155,7 @@ CREATE INDEX idx_classes_school_id ON classes (school_id);
 CREATE INDEX idx_subjects_school_id ON subjects (school_id);
 CREATE INDEX idx_subjects_teacher_id ON subjects (teacher_id);
 CREATE INDEX idx_enrollments_school_id ON enrollments (school_id);
+CREATE INDEX idx_enrollments_student_id ON enrollments (student_id);
+CREATE INDEX idx_enrollments_class_id ON enrollments (class_id);
 CREATE INDEX idx_grades_school_id ON grades (school_id);
 CREATE INDEX idx_attendance_school_id ON attendance (school_id);

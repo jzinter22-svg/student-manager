@@ -146,6 +146,33 @@ const subjectsMessage = document.getElementById('subjectsMessage');
 const subjectsLoading = document.getElementById('subjectsLoading');
 const subjectsList = document.getElementById('subjectsList');
 
+const addEnrollmentBtn = document.getElementById('addEnrollmentBtn');
+const enrollmentFormCard = document.getElementById('enrollmentFormCard');
+const enrollmentForm = document.getElementById('enrollmentForm');
+const enrollmentStudentSelect = document.getElementById('enrollmentStudent');
+const enrollmentClassSelect = document.getElementById('enrollmentClass');
+const currentEnrollmentWarning = document.getElementById('currentEnrollmentWarning');
+const enrollmentFormError = document.getElementById('enrollmentFormError');
+const enrollmentFormSubmit = document.getElementById('enrollmentFormSubmit');
+const enrollmentFormCancel = document.getElementById('enrollmentFormCancel');
+
+const transferFormCard = document.getElementById('transferFormCard');
+const transferStudentLabel = document.getElementById('transferStudentLabel');
+const transferCurrentClass = document.getElementById('transferCurrentClass');
+const transferAcademicYear = document.getElementById('transferAcademicYear');
+const transferForm = document.getElementById('transferForm');
+const transferClassSelect = document.getElementById('transferClass');
+const transferFormError = document.getElementById('transferFormError');
+const transferFormSubmit = document.getElementById('transferFormSubmit');
+const transferFormCancel = document.getElementById('transferFormCancel');
+
+const enrollmentSearchInput = document.getElementById('enrollmentSearch');
+const enrollmentYearFilterSelect = document.getElementById('enrollmentYearFilter');
+const enrollmentsError = document.getElementById('enrollmentsError');
+const enrollmentsMessage = document.getElementById('enrollmentsMessage');
+const enrollmentsLoading = document.getElementById('enrollmentsLoading');
+const enrollmentsList = document.getElementById('enrollmentsList');
+
 const addStudentForm = document.getElementById('addStudentForm');
 const studentNameInput = document.getElementById('studentName');
 const addStudentSubmit = document.getElementById('addStudentSubmit');
@@ -171,7 +198,10 @@ const state = {
     editingClassId: null,
     subjects: [],
     subjectsLoadState: 'idle',
-    editingSubjectId: null
+    editingSubjectId: null,
+    enrollments: [],
+    enrollmentsLoadState: 'idle',
+    transferringEnrollmentId: null
 };
 
 const NAV_SECTIONS = {
@@ -179,6 +209,7 @@ const NAV_SECTIONS = {
     students: { view: 'view-students', functional: true },
     teachers: { view: 'view-teachers', functional: true },
     classes: { view: 'view-classes', functional: true },
+    enrollments: { view: 'view-enrollments', functional: true },
     subjects: { view: 'view-subjects', functional: true },
     attendance: { view: 'view-placeholder', functional: false, label: 'الحضور' },
     grades: { view: 'view-placeholder', functional: false, label: 'الدرجات' }
@@ -217,6 +248,13 @@ function canManageSubject(subject) {
 
 function isTeacherRole() {
     return Boolean(state.user) && state.user.role === 'teacher';
+}
+
+// Enrollments use the identical owner/admin-only rule as Teachers/Classes
+// (no per-item ownership nuance -- unlike Subjects, an enrollment has no
+// concept of "belonging" to a teacher).
+function canManageEnrollments() {
+    return canManageTeachers();
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +336,8 @@ function showAppScreen(user) {
     state.classesLoadState = 'idle';
     state.subjects = [];
     state.subjectsLoadState = 'idle';
+    state.enrollments = [];
+    state.enrollmentsLoadState = 'idle';
     hideAllScreens();
     screens.app.hidden = false;
     renderUserInfo(user);
@@ -309,6 +349,9 @@ function showAppScreen(user) {
     renderClassesList();
     closeSubjectForm();
     renderSubjectsList();
+    closeEnrollmentForm();
+    closeTransferForm();
+    renderEnrollmentsList();
     loadStudentsData();
 }
 
@@ -401,6 +444,9 @@ function navigateTo(section) {
     }
     if (section === 'subjects' && state.subjectsLoadState === 'idle') {
         loadSubjectsData();
+    }
+    if (section === 'enrollments' && state.enrollmentsLoadState === 'idle') {
+        loadEnrollmentsData();
     }
 
     closeMobileSidebar();
@@ -1378,6 +1424,424 @@ subjectForm.addEventListener('submit', function (event) {
         }
     );
 });
+
+// ---------------------------------------------------------------------------
+// Enrollments (protected; create/transfer/end are owner/admin only, view
+// is available to every role including teacher/staff. Reuses the
+// already-loaded state.students/state.classes for the form dropdowns --
+// no new fetches beyond what Students/Classes already load; this
+// frontend never reads, stores, or sends a school_id anywhere here
+// either, and academic_year always comes from the class the server
+// looked up, never something this page invents.)
+// ---------------------------------------------------------------------------
+
+function formatDate(isoString) {
+    if (!isoString) return '';
+    const date = new Date(isoString);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    return day + '/' + month + '/' + date.getFullYear();
+}
+
+function findCurrentEnrollmentForStudent(studentId) {
+    return state.enrollments.find(function (e) {
+        return e.student_id === studentId && e.is_current;
+    }) || null;
+}
+
+function getEnrollmentAcademicYears() {
+    const years = new Set();
+    state.enrollments.forEach(function (e) {
+        if (e.academic_year) years.add(e.academic_year);
+    });
+    return Array.from(years).sort().reverse();
+}
+
+function populateEnrollmentYearFilter() {
+    const previousValue = enrollmentYearFilterSelect.value;
+    const years = getEnrollmentAcademicYears();
+    enrollmentYearFilterSelect.innerHTML = '<option value="">كل السنوات</option>';
+    years.forEach(function (year) {
+        const option = document.createElement('option');
+        option.value = year;
+        option.textContent = year;
+        enrollmentYearFilterSelect.appendChild(option);
+    });
+    if (years.indexOf(previousValue) !== -1) {
+        enrollmentYearFilterSelect.value = previousValue;
+    }
+}
+
+function populateClassSelect(selectEl, excludeClassId, placeholderText) {
+    selectEl.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = placeholderText || 'اختر الصف...';
+    selectEl.appendChild(placeholder);
+    state.classes.forEach(function (classItem) {
+        if (excludeClassId && classItem.id === excludeClassId) return;
+        const option = document.createElement('option');
+        option.value = String(classItem.id);
+        option.textContent = classItem.name + ' · ' + classItem.grade_level + ' · ' + classItem.academic_year;
+        selectEl.appendChild(option);
+    });
+}
+
+// Real students/classes only -- both are already-loaded application data
+// from the existing Students/Classes modules, never a hardcoded list.
+function ensureEnrollmentFormData() {
+    const tasks = [];
+    if (state.studentsLoadState !== 'loaded') tasks.push(loadStudentsData());
+    if (state.classesLoadState !== 'loaded') tasks.push(loadClassesData());
+    return Promise.all(tasks);
+}
+
+function renderCurrentEnrollmentWarning(studentId) {
+    currentEnrollmentWarning.innerHTML = '';
+    currentEnrollmentWarning.hidden = true;
+
+    const current = findCurrentEnrollmentForStudent(studentId);
+    if (!current) return;
+
+    currentEnrollmentWarning.hidden = false;
+    const text = document.createElement('p');
+    text.textContent = 'هذا الطالب مسجل حاليًا في الصف "' + current.class_name + '" (' + current.academic_year +
+        '). استخدم خيار نقل الطالب بدلًا من تسجيله مرة أخرى.';
+    currentEnrollmentWarning.appendChild(text);
+
+    const goToTransferBtn = document.createElement('button');
+    goToTransferBtn.type = 'button';
+    goToTransferBtn.className = 'btn btn-secondary btn-small';
+    goToTransferBtn.textContent = 'الانتقال إلى نقل الطالب';
+    goToTransferBtn.addEventListener('click', function () {
+        closeEnrollmentForm();
+        openTransferForm(current);
+    });
+    currentEnrollmentWarning.appendChild(goToTransferBtn);
+}
+
+enrollmentStudentSelect.addEventListener('change', function () {
+    const studentId = Number(enrollmentStudentSelect.value) || null;
+    if (!studentId) {
+        currentEnrollmentWarning.hidden = true;
+        currentEnrollmentWarning.innerHTML = '';
+        return;
+    }
+    renderCurrentEnrollmentWarning(studentId);
+});
+
+function openEnrollmentForm() {
+    clearError(enrollmentFormError);
+    enrollmentForm.reset();
+    currentEnrollmentWarning.hidden = true;
+    currentEnrollmentWarning.innerHTML = '';
+    enrollmentFormCard.hidden = false;
+
+    enrollmentStudentSelect.innerHTML = '<option value="">جاري التحميل...</option>';
+    enrollmentClassSelect.innerHTML = '<option value="">جاري التحميل...</option>';
+    ensureEnrollmentFormData().then(function () {
+        enrollmentStudentSelect.innerHTML = '<option value="">اختر الطالب...</option>';
+        state.students.forEach(function (student) {
+            const option = document.createElement('option');
+            option.value = String(student.id);
+            option.textContent = student.name + (student.student_code ? ' (' + student.student_code + ')' : '');
+            enrollmentStudentSelect.appendChild(option);
+        });
+        populateClassSelect(enrollmentClassSelect, null, 'اختر الصف...');
+    });
+}
+
+function closeEnrollmentForm() {
+    enrollmentForm.reset();
+    clearError(enrollmentFormError);
+    currentEnrollmentWarning.hidden = true;
+    currentEnrollmentWarning.innerHTML = '';
+    enrollmentFormCard.hidden = true;
+}
+
+addEnrollmentBtn.addEventListener('click', openEnrollmentForm);
+enrollmentFormCancel.addEventListener('click', closeEnrollmentForm);
+
+// Maps the backend's (English) error strings to the specific Arabic
+// messages this phase calls for, falling back to defaultMessage
+// otherwise -- same pattern used for registration/subject errors.
+function translateEnrollmentError(error, defaultMessage) {
+    const raw = error.serverMessage || '';
+    if (raw.indexOf('already has an active enrollment') !== -1) {
+        return 'الطالب مسجل بالفعل في صف آخر في هذه السنة الدراسية. استخدم خيار "نقل الطالب" بدلًا من تسجيله مرة أخرى.';
+    }
+    if (raw.indexOf('Cannot transfer to the same class') !== -1) {
+        return 'لا يمكن نقل الطالب إلى نفس الصف الحالي.';
+    }
+    if (raw.indexOf('different academic year') !== -1) {
+        return 'لا يمكن نقل الطالب إلى صف من سنة دراسية مختلفة.';
+    }
+    if (raw.indexOf('already ended') !== -1) {
+        return 'تم إنهاء هذا التسجيل بالفعل.';
+    }
+    if (raw.indexOf('Student not found') !== -1 || raw.indexOf('Class not found') !== -1) {
+        return 'يرجى اختيار طالب وصف صالحين من نفس المدرسة.';
+    }
+    return defaultMessage;
+}
+
+enrollmentForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    clearError(enrollmentFormError);
+
+    const studentId = Number(enrollmentStudentSelect.value) || null;
+    const classId = Number(enrollmentClassSelect.value) || null;
+
+    if (!studentId) {
+        showError(enrollmentFormError, 'يرجى اختيار الطالب.');
+        return;
+    }
+    if (!classId) {
+        showError(enrollmentFormError, 'يرجى اختيار الصف.');
+        return;
+    }
+
+    withLoading(enrollmentFormSubmit, 'جاري تسجيل الطالب...', async function () {
+        try {
+            await apiFetch('/api/enrollments', {
+                method: 'POST',
+                body: JSON.stringify({ student_id: studentId, class_id: classId })
+            });
+            clearError(enrollmentsError);
+            showNotice(enrollmentsMessage, 'تم تسجيل الطالب بنجاح.');
+            closeEnrollmentForm();
+            await loadEnrollmentsData();
+        } catch (error) {
+            handleApiError(error, translateEnrollmentError(error, 'تعذر تسجيل الطالب. حاول مرة أخرى.'), [enrollmentFormError]);
+        }
+    });
+});
+
+// ---- Transfer ----
+
+function openTransferForm(enrollment) {
+    state.transferringEnrollmentId = enrollment.id;
+    clearError(transferFormError);
+    transferForm.reset();
+    transferStudentLabel.textContent = enrollment.student_name +
+        (enrollment.student_code ? ' (' + enrollment.student_code + ')' : '');
+    transferCurrentClass.textContent = enrollment.class_name + ' · ' + enrollment.grade_level;
+    transferAcademicYear.textContent = enrollment.academic_year;
+    transferFormCard.hidden = false;
+
+    transferClassSelect.innerHTML = '<option value="">جاري التحميل...</option>';
+    const populate = function () {
+        populateClassSelect(transferClassSelect, enrollment.class_id, 'اختر الصف الجديد...');
+    };
+    if (state.classesLoadState === 'loaded') {
+        populate();
+    } else {
+        loadClassesData().then(populate);
+    }
+}
+
+function closeTransferForm() {
+    state.transferringEnrollmentId = null;
+    transferForm.reset();
+    clearError(transferFormError);
+    transferFormCard.hidden = true;
+}
+
+transferFormCancel.addEventListener('click', closeTransferForm);
+
+transferForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    clearError(transferFormError);
+
+    const newClassId = Number(transferClassSelect.value) || null;
+    if (!newClassId) {
+        showError(transferFormError, 'يرجى اختيار الصف الجديد.');
+        return;
+    }
+    if (!window.confirm('هل أنت متأكد من نقل الطالب إلى الصف الجديد؟')) {
+        return;
+    }
+
+    const enrollmentId = state.transferringEnrollmentId;
+    withLoading(transferFormSubmit, 'جاري تنفيذ النقل...', async function () {
+        try {
+            await apiFetch('/api/enrollments/' + enrollmentId + '/transfer', {
+                method: 'POST',
+                body: JSON.stringify({ class_id: newClassId })
+            });
+            clearError(enrollmentsError);
+            showNotice(enrollmentsMessage, 'تم نقل الطالب بنجاح.');
+            closeTransferForm();
+            await loadEnrollmentsData();
+        } catch (error) {
+            handleApiError(error, translateEnrollmentError(error, 'تعذر نقل الطالب. حاول مرة أخرى.'), [transferFormError]);
+        }
+    });
+});
+
+// ---- End enrollment ----
+
+function endEnrollment(enrollment) {
+    if (!window.confirm('هل أنت متأكد من إنهاء تسجيل "' + enrollment.student_name + '" في الصف الحالي؟')) {
+        return;
+    }
+
+    clearError(enrollmentsError);
+    clearNotice(enrollmentsMessage);
+
+    apiFetch('/api/enrollments/' + enrollment.id + '/end', { method: 'POST' })
+        .then(function () {
+            showNotice(enrollmentsMessage, 'تم إنهاء التسجيل بنجاح.');
+            return loadEnrollmentsData();
+        })
+        .catch(function (error) {
+            handleApiError(error, translateEnrollmentError(error, 'تعذر إنهاء التسجيل. حاول مرة أخرى.'), [enrollmentsError]);
+        });
+}
+
+// ---- List, search, filter ----
+
+function getFilteredEnrollments() {
+    const query = enrollmentSearchInput.value.trim().toLowerCase();
+    const yearFilter = enrollmentYearFilterSelect.value;
+    return state.enrollments.filter(function (enrollment) {
+        if (yearFilter && enrollment.academic_year !== yearFilter) return false;
+        if (!query) return true;
+        return [
+            enrollment.student_name,
+            enrollment.student_code,
+            enrollment.class_name,
+            enrollment.grade_level,
+            enrollment.academic_year
+        ].some(function (value) {
+            return (value || '').toLowerCase().indexOf(query) !== -1;
+        });
+    });
+}
+
+function buildEnrollmentListItem(enrollment) {
+    const item = document.createElement('li');
+    item.className = 'teacher-item';
+
+    const info = document.createElement('div');
+    info.className = 'teacher-info';
+
+    const nameLine = document.createElement('span');
+    nameLine.className = 'teacher-name';
+    nameLine.appendChild(document.createTextNode(enrollment.student_name + ' '));
+    if (enrollment.student_code) {
+        const codeBadge = document.createElement('span');
+        codeBadge.className = 'code-badge';
+        codeBadge.textContent = enrollment.student_code;
+        nameLine.appendChild(codeBadge);
+    }
+    info.appendChild(nameLine);
+
+    const classLine = document.createElement('span');
+    classLine.className = 'teacher-meta';
+    classLine.textContent = enrollment.class_name + ' · ' + enrollment.grade_level + ' · ' + enrollment.academic_year;
+    info.appendChild(classLine);
+
+    const dateLine = document.createElement('span');
+    dateLine.className = 'teacher-meta';
+    const rangeText = 'من ' + formatDate(enrollment.started_at) +
+        (enrollment.ended_at ? ' إلى ' + formatDate(enrollment.ended_at) : '') + ' — ';
+    dateLine.appendChild(document.createTextNode(rangeText));
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'status-badge ' + (enrollment.is_current ? 'status-current' : 'status-ended');
+    statusBadge.textContent = enrollment.is_current ? 'حالي' : 'منتهي';
+    dateLine.appendChild(statusBadge);
+    info.appendChild(dateLine);
+
+    item.appendChild(info);
+
+    const actions = document.createElement('div');
+    actions.className = 'teacher-actions';
+
+    // Reuses the existing search box as the "student history" view: this
+    // fills it with the student's name so the already-visible list
+    // (current + historical rows, newest first) filters down to just
+    // theirs -- no separate history UI needed.
+    const historyBtn = document.createElement('button');
+    historyBtn.type = 'button';
+    historyBtn.className = 'btn btn-secondary btn-small';
+    historyBtn.textContent = 'عرض سجل الطالب';
+    historyBtn.addEventListener('click', function () {
+        enrollmentSearchInput.value = enrollment.student_name;
+        renderEnrollmentsList();
+    });
+    actions.appendChild(historyBtn);
+
+    if (enrollment.is_current && canManageEnrollments()) {
+        const transferBtn = document.createElement('button');
+        transferBtn.type = 'button';
+        transferBtn.className = 'btn btn-secondary btn-small';
+        transferBtn.textContent = 'نقل الطالب';
+        transferBtn.addEventListener('click', function () {
+            openTransferForm(enrollment);
+        });
+        actions.appendChild(transferBtn);
+
+        const endBtn = document.createElement('button');
+        endBtn.type = 'button';
+        endBtn.className = 'btn btn-danger btn-small';
+        endBtn.textContent = 'إنهاء التسجيل';
+        endBtn.addEventListener('click', function () {
+            endEnrollment(enrollment);
+        });
+        actions.appendChild(endBtn);
+    }
+
+    item.appendChild(actions);
+    return item;
+}
+
+function renderEnrollmentsList() {
+    addEnrollmentBtn.hidden = !canManageEnrollments();
+    populateEnrollmentYearFilter();
+    enrollmentsList.innerHTML = '';
+
+    if (state.enrollmentsLoadState !== 'loaded') {
+        return;
+    }
+
+    const filtered = getFilteredEnrollments();
+
+    if (filtered.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'teachers-empty';
+        empty.textContent = state.enrollments.length === 0
+            ? 'لا توجد تسجيلات حتى الآن.'
+            : 'لا توجد نتائج مطابقة للبحث.';
+        enrollmentsList.appendChild(empty);
+        return;
+    }
+
+    filtered.forEach(function (enrollment) {
+        enrollmentsList.appendChild(buildEnrollmentListItem(enrollment));
+    });
+}
+
+async function loadEnrollmentsData() {
+    state.enrollmentsLoadState = 'loading';
+    enrollmentsLoading.hidden = false;
+    clearError(enrollmentsError);
+
+    try {
+        const data = await apiFetch('/api/enrollments', { method: 'GET' });
+        state.enrollments = data.enrollments || [];
+        state.enrollmentsLoadState = 'loaded';
+    } catch (error) {
+        state.enrollmentsLoadState = 'error';
+        handleApiError(error, 'تعذر تحميل بيانات التسجيلات.', [enrollmentsError]);
+    } finally {
+        enrollmentsLoading.hidden = true;
+        renderEnrollmentsList();
+    }
+}
+
+enrollmentSearchInput.addEventListener('input', renderEnrollmentsList);
+enrollmentYearFilterSelect.addEventListener('change', renderEnrollmentsList);
 
 // ---------------------------------------------------------------------------
 // Boot

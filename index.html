@@ -105,6 +105,7 @@
                         <li><button type="button" class="nav-item" data-section="students">الطلاب</button></li>
                         <li><button type="button" class="nav-item" data-section="teachers">المعلمون</button></li>
                         <li><button type="button" class="nav-item" data-section="classes">الصفوف</button></li>
+                        <li><button type="button" class="nav-item" data-section="enrollments">تسجيل الطلاب</button></li>
                         <li><button type="button" class="nav-item" data-section="subjects">المواد</button></li>
                         <li><button type="button" class="nav-item" data-section="attendance">الحضور</button></li>
                         <li><button type="button" class="nav-item" data-section="grades">الدرجات</button></li>
@@ -280,6 +281,99 @@
                             <p id="classesLoading" class="init-loading" hidden>جاري تحميل البيانات...</p>
 
                             <ul id="classesList" class="teachers-list" aria-live="polite"></ul>
+                        </div>
+                    </section>
+
+                    <!-- View: Enrollments -->
+                    <section id="view-enrollments" class="view" hidden>
+                        <div class="card">
+                            <div class="section-header">
+                                <div>
+                                    <h3>تسجيل الطلاب</h3>
+                                    <p class="section-subtitle">إدارة تسجيل الطلاب في الصفوف ومتابعة انتقالاتهم الدراسية</p>
+                                </div>
+                                <button type="button" class="btn btn-add" id="addEnrollmentBtn" hidden>+ تسجيل طالب</button>
+                            </div>
+                        </div>
+
+                        <div class="card" id="enrollmentFormCard" hidden>
+                            <h3>تسجيل طالب</h3>
+                            <form id="enrollmentForm" novalidate>
+                                <div class="field">
+                                    <label for="enrollmentStudent">الطالب *</label>
+                                    <select id="enrollmentStudent">
+                                        <option value="">اختر الطالب...</option>
+                                    </select>
+                                </div>
+
+                                <div id="currentEnrollmentWarning" class="notice" hidden></div>
+
+                                <div class="field">
+                                    <label for="enrollmentClass">الصف *</label>
+                                    <select id="enrollmentClass">
+                                        <option value="">اختر الصف...</option>
+                                    </select>
+                                </div>
+
+                                <div id="enrollmentFormError" class="error-message" role="alert" aria-live="polite"></div>
+
+                                <div class="form-actions">
+                                    <button type="submit" class="btn" id="enrollmentFormSubmit">حفظ</button>
+                                    <button type="button" class="btn btn-secondary" id="enrollmentFormCancel">إلغاء</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <div class="card" id="transferFormCard" hidden>
+                            <h3>نقل الطالب</h3>
+                            <p id="transferStudentLabel" class="section-subtitle"></p>
+                            <div class="transfer-summary">
+                                <div class="info-item">
+                                    <span class="info-label">الصف الحالي</span>
+                                    <span class="info-value" id="transferCurrentClass"></span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">السنة الدراسية</span>
+                                    <span class="info-value" id="transferAcademicYear"></span>
+                                </div>
+                            </div>
+                            <form id="transferForm" novalidate>
+                                <div class="field">
+                                    <label for="transferClass">الصف الجديد *</label>
+                                    <select id="transferClass">
+                                        <option value="">اختر الصف الجديد...</option>
+                                    </select>
+                                </div>
+
+                                <div id="transferFormError" class="error-message" role="alert" aria-live="polite"></div>
+
+                                <div class="form-actions">
+                                    <button type="submit" class="btn" id="transferFormSubmit">تأكيد النقل</button>
+                                    <button type="button" class="btn btn-secondary" id="transferFormCancel">إلغاء</button>
+                                </div>
+                            </form>
+                        </div>
+
+                        <div class="card">
+                            <div class="students-list-header">
+                                <h3>سجل التسجيلات</h3>
+                                <div class="field search-field">
+                                    <label for="enrollmentSearch">البحث</label>
+                                    <input type="search" id="enrollmentSearch" autocomplete="off" placeholder="اسم الطالب أو رمزه أو الصف أو المرحلة...">
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label for="enrollmentYearFilter">تصفية حسب السنة الدراسية</label>
+                                <select id="enrollmentYearFilter">
+                                    <option value="">كل السنوات</option>
+                                </select>
+                            </div>
+
+                            <div id="enrollmentsError" class="error-message" role="alert" aria-live="polite"></div>
+                            <div id="enrollmentsMessage" class="notice" role="status" aria-live="polite"></div>
+                            <p id="enrollmentsLoading" class="init-loading" hidden>جاري تحميل البيانات...</p>
+
+                            <ul id="enrollmentsList" class="teachers-list" aria-live="polite"></ul>
                         </div>
                     </section>
 

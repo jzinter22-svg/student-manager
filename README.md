@@ -501,3 +501,136 @@ level (cross-school `GET`/`PATCH`/`DELETE` all correctly blocked) and
 through the real UI; and a full Phase 1–6 regression (registration,
 login, student/teacher/class creation, dashboard, session refresh,
 logout) passed alongside the new module.
+
+## Phase 8 — Student Enrollment Management
+
+`تسجيل الطلاب` is a new sidebar module (there was no placeholder for it —
+it's added fresh) tying students to classes over time, with full
+transfer history. The relationship stays `Student → Enrollment → Class`;
+there is deliberately no `students.class_id` — a student's current class
+is always *derived* from their active enrollment row.
+
+**Schema change:** `enrollments` gains `started_at`/`ended_at
+TIMESTAMPTZ`, and the old `UNIQUE (student_id, class_id, academic_year)`
+constraint is **replaced** by a partial unique index:
+
+```sql
+CREATE UNIQUE INDEX idx_enrollments_one_active_per_year
+    ON enrollments (student_id, academic_year)
+    WHERE ended_at IS NULL;
+```
+
+This is the core Phase 8 invariant enforced by PostgreSQL itself, not
+just application code: **a student may have at most one active
+(`ended_at IS NULL`) enrollment per academic year.** The old constraint
+was insufficient (and actively wrong) for the transfer model this phase
+needs: it would have blocked a student transferring back into a class
+they'd previously left in the same year (A → B → A), since that exact
+`(student_id, class_id, academic_year)` triple already exists from the
+first, now-ended, enrollment row. A transfer never deletes anything — it
+sets `ended_at = now()` on the row being left and inserts a fresh row
+(`started_at = now()`, `ended_at = NULL`) for the new class, inside one
+transaction, so full history always survives. Also added:
+`idx_enrollments_student_id`, `idx_enrollments_class_id` (`school_id`
+was already indexed).
+
+**Migration safety:** this was a direct schema addition, not a live-data
+migration — like every table added in earlier phases, no code path
+before this phase ever inserted an `enrollments` row (`تسجيل الطلاب` did
+not exist at all before now), so there was nothing to conflict with. The
+required pre-migration check —
+
+```sql
+SELECT student_id, academic_year, count(*)
+FROM enrollments
+WHERE ended_at IS NULL
+GROUP BY student_id, academic_year
+HAVING count(*) > 1;
+```
+
+— was run against a copy of this schema before adding the index and
+returned zero rows, confirming no existing data could violate the new
+constraint. An operator applying this to a real, already-populated
+database (e.g. one seeded outside this application) should run that same
+query first and resolve any conflicts before applying the migration.
+
+**API** (all tenant-scoped by `req.user.school_id`; view is available to
+every authenticated role, mutations are owner/admin only):
+
+- `GET /api/enrollments` — any role; joins `students`/`classes` so every
+  row already carries `student_name`, `student_code`, `class_name`,
+  `grade_level`, plus `is_current` (`ended_at IS NULL`) — no per-row
+  follow-up request. Ordered `started_at DESC, id DESC`.
+- `POST /api/enrollments` — owner/admin; body is just `{student_id,
+  class_id}`. `academic_year` is never read from the client — it's
+  always the selected class's own `academic_year` column, after
+  verifying both the student and the class belong to
+  `req.user.school_id`. Rejects a duplicate active enrollment for that
+  student/year with a clear message *and* relies on the database's
+  partial unique index as the real protection against a race between two
+  near-simultaneous requests (caught as Postgres error `23505`, never
+  surfaced raw).
+- `POST /api/enrollments/:id/transfer` — owner/admin; body is
+  `{class_id}` (the new class). Runs in one transaction with `SELECT ...
+  FOR UPDATE` on the current enrollment row (so a second concurrent
+  transfer/end of the same enrollment blocks rather than races): rejects
+  transferring an enrollment that's already ended, transferring to the
+  same class, a target class outside the school, or a target class in a
+  *different* academic year (out of scope for this phase); otherwise ends
+  the old row and inserts the new one before committing — the order
+  matters, since it's what lets the new row become active without
+  tripping the very constraint meant to protect that invariant.
+- `POST /api/enrollments/:id/end` — owner/admin; sets `ended_at = now()`
+  on an active enrollment. Never deletes the row. Ending an
+  already-ended enrollment returns a clear `400`, not a silent no-op or a
+  `404` that would obscure the distinction from "doesn't exist here."
+
+Cross-tenant `transfer`/`end` resolve to `404` (never `403`, consistent
+with every other module) rather than confirming another school's
+enrollment exists.
+
+**Frontend** — same visual language as Teachers/Classes/Subjects (the
+enrollment list reuses those modules' `.teacher-item` layout classes plus
+two new small ones, `.status-badge`/`.status-current`/`.status-ended`,
+for the حالي/منتهي indicator). The add form's student and class
+`<select>`s are populated from the already-loaded Students/Classes module
+data — no new fetches, no hardcoded names or years. Selecting a student
+who already has a current enrollment shows a warning naming their
+current class/year with a one-click shortcut straight into the transfer
+form, so the normal add flow can't produce a duplicate (the backend
+still rejects one regardless, with the exact required Arabic message).
+"View a student's history" is handled by reusing the existing search box
+rather than a separate view: a `عرض سجل الطالب` action on any row fills
+the search with that student's name, and the already-current-plus-
+historical list filters down to just their timeline. The academic-year
+filter's options come from the distinct years actually present in the
+loaded enrollments, never a hardcoded list. Transfer and end both
+require a native `confirm()`, matching the delete-confirmation pattern
+used elsewhere; end and transfer controls are shown only for a *current*
+enrollment and only to owner/admin — the API enforces the real
+restriction regardless of what the UI shows.
+
+Tested with real Chromium via Playwright (42 assertions) plus curl for
+the direct-database bypass and concurrency-adjacent checks a browser
+can't drive: unauthenticated `401`; all four roles read; owner/admin
+create/transfer/end while teacher/staff get `403` (teacher retains full
+read access, verified separately); missing/non-existent/cross-tenant
+student or class all rejected `400`; a forged `academic_year` in the
+request body is provably ignored (the real class year is what's stored);
+duplicate active enrollment rejected by the API *and*, bypassing the API
+entirely with a direct `INSERT`, rejected by the database's partial
+unique index itself; the full transfer lifecycle (old row ended, new row
+active, exactly one active row, complete history preserved) including
+the specific **A → B → A** case the schema change exists to support;
+transfer rejected for an already-ended enrollment, the same class, a
+cross-tenant class, a nonexistent class, and a different academic year;
+end rejected on an already-ended enrollment (`400`, row still present,
+not deleted) and confirmed still visible in history afterward; the
+mandatory two-school regression — cross-tenant `GET`/`transfer`/`end` all
+correctly blocked (`404`), verified from curl and the real UI in both
+directions; a SQL-injection-shaped non-numeric id rejected as plain
+invalid input; the full create → duplicate-warning → transfer → history
+→ end lifecycle through the real UI; the academic-year filter and search;
+no horizontal overflow at 375/768/1024px; and a full Phase 1–7 regression
+(registration, login, students, classes, subjects, dashboard, session
+refresh, logout) passed alongside the new module.
