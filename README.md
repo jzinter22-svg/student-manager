@@ -634,3 +634,46 @@ invalid input; the full create → duplicate-warning → transfer → history
 no horizontal overflow at 375/768/1024px; and a full Phase 1–7 regression
 (registration, login, students, classes, subjects, dashboard, session
 refresh, logout) passed alongside the new module.
+
+## Render Deployment
+
+The app is a single Node.js process (`server.js`) serving both the API and
+the static frontend, so it deploys as one Render Web Service with no
+separate frontend build/host.
+
+**Build command:**
+```
+npm install
+```
+
+**Start command:**
+```
+npm start
+```
+
+**Health check path:**
+```
+/health
+```
+Returns `200 OK` with no authentication and no database access, suitable
+for Render's health check probe.
+
+**Required environment variables** (set in the Render service's
+Environment tab, never committed to the repo):
+- `DATABASE_URL` — connection string for the production PostgreSQL
+  instance (e.g. a Render PostgreSQL or external Postgres provider).
+- `SESSION_SECRET` — a long random string used to sign session cookies.
+  If unset, the server generates a random secret on each boot (fine for
+  local development, but it invalidates all sessions on every restart —
+  always set this in production).
+
+**Recommended:**
+- `NODE_ENV=production` — enables the `Secure` attribute on the session
+  cookie (in addition to the `HttpOnly`/`SameSite=Lax` attributes it
+  always has), which requires the app to be served over HTTPS. Render
+  terminates TLS and serves every Web Service over HTTPS, so this is
+  safe to set.
+
+The server binds to `process.env.PORT` (falling back to `3000` when
+unset), which is what Render requires — it assigns the port a Web
+Service must listen on via that same environment variable.

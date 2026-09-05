@@ -39,6 +39,13 @@ function sendJson(res, statusCode, payload) {
     res.end(JSON.stringify(payload));
 }
 
+// Unauthenticated, no-database liveness check for Render's health check --
+// deliberately does nothing but confirm the process is up and serving HTTP.
+async function handleHealth(req, res) {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('OK');
+}
+
 function readRequestBody(req) {
     return new Promise((resolve, reject) => {
         let body = '';
@@ -1239,6 +1246,7 @@ async function handleEndEnrollment(req, res) {
 // ---------------------------------------------------------------------------
 
 const routes = {
+    'GET /health': handleHealth,
     'POST /api/auth/register': handleRegister,
     'POST /api/auth/login': handleLogin,
     'GET /api/auth/me': requireAuth(handleMe),
@@ -1322,6 +1330,7 @@ const server = http.createServer((req, res) => {
     });
 });
 
-server.listen(3000, () => {
-    console.log('Server listening on port 3000');
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
 });
