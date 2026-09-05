@@ -39,6 +39,28 @@ function sendJson(res, statusCode, payload) {
     res.end(JSON.stringify(payload));
 }
 
+// Normalizes any caught value into a plain object safe for server-side
+// logging. Handles the case that produced empty "Unexpected server error:"
+// log lines: an Error whose .message is missing or empty (e.g. some
+// database/network failures), or a rejection that isn't an Error at all.
+// Only ever reads properties off the error/value itself -- never touches
+// request bodies, env vars, or other application state, so it can't leak
+// DATABASE_URL, SESSION_SECRET, passwords, hashes, tokens, or cookies.
+function formatError(error) {
+    if (error instanceof Error) {
+        return {
+            name: error.name,
+            message: error.message || '(no error message)',
+            code: error.code || null,
+            stack: error.stack || null
+        };
+    }
+    return {
+        name: typeof error,
+        message: String(error)
+    };
+}
+
 // Unauthenticated, no-database liveness check for Render's health check --
 // deliberately does nothing but confirm the process is up and serving HTTP.
 async function handleHealth(req, res) {
@@ -321,8 +343,13 @@ async function handleRegister(req, res) {
     // there's no reason to hold a database transaction open while it runs.
     const passwordHash = hashPassword(password);
 
-    const client = await pool.connect();
+    // Acquired inside the try/catch below (unlike before) so a connection
+    // failure -- not just a query failure -- is caught, logged with real
+    // diagnostic detail, and turned into a safe response, instead of
+    // escaping to the generic top-level handler.
+    let client;
     try {
+        client = await pool.connect();
         await client.query('BEGIN');
 
         const schoolResult = await client.query(
@@ -344,18 +371,24 @@ async function handleRegister(req, res) {
         // schoolName is already known from validated input -- no extra query needed.
         sendJson(res, 201, { success: true, user: safeUser({ ...userResult.rows[0], school_name: schoolName }) });
     } catch (error) {
-        await client.query('ROLLBACK');
+        if (client) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback failed during registration:', formatError(rollbackError));
+            }
+        }
         if (error.code === '23505') {
             const message = error.constraint === 'schools_code_key'
                 ? 'School code is already in use'
                 : 'Email is already in use';
             sendJson(res, 400, { success: false, error: message });
         } else {
-            console.error('Database error during registration:', error.message);
+            console.error('Database error during registration:', formatError(error));
             sendJson(res, 500, { success: false, error: 'Registration failed' });
         }
     } finally {
-        client.release();
+        if (client) client.release();
     }
 }
 
@@ -1325,7 +1358,7 @@ const server = http.createServer((req, res) => {
     }
 
     handler(req, res).catch(error => {
-        console.error('Unexpected server error:', error.message);
+        console.error('Unexpected server error:', formatError(error));
         sendJson(res, 500, { success: false, error: 'Internal server error' });
     });
 });
